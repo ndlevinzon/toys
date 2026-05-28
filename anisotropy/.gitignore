@@ -1,0 +1,44 @@
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+dist/
+build/
+*.egg
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Run outputs (keep code; ignore generated artifacts)
+anisotropy_run.log
+orientation_diagnostics/
+_test_*/
+_tmp*/
+*.png
+!docs/**/*.png
+
+# Local structure data (add your own PDB/PLY; do not commit large runs by default)
+# Uncomment if you want to exclude all structures from git:
+# *.pdb
+# *.ply
+# *.npz
+
+# Sphinx build
+docs/_build/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# ff19SB bundle: tests are not needed at runtime (optional slim clone)
+utils/ff19SB_201907-master/**/test/

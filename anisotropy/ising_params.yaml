@@ -1,0 +1,171 @@
+# =============================================================================
+# Ising / lattice-gas hybrid Hamiltonian parameters (cryo-EM AWI orientation model)
+# =============================================================================
+#
+# Loaded by anisotropy.ising_params.load_ising_params() and used by
+# orientation_sample.py (override single keys via CLI; see --help).
+#
+# Energy scale: all coupling energies share one arbitrary unit unless you
+# calibrate COULOMB_SCALE and beta together. Boltzmann weights use exp(-beta * H).
+#
+# Full equations: docs/HYBRID_HAMILTONIAN_PARAMETERS.md
+# =============================================================================
+
+meta:
+  version: "1.0"
+  description: "Default cryo-EM vitrified-water slab + protein-at-top-AWI orientation model"
+
+# -----------------------------------------------------------------------------
+# H_solv — lattice-gas / Ising solvent on a cubic grid
+# -----------------------------------------------------------------------------
+solv:
+  # J: nearest-neighbor cohesion -J * sum_{<i,j>} eta_i eta_j (6-connectivity).
+  #    Favors contiguous water clusters. Tune from MD contact energy or surface tension.
+  J: 1.0
+
+  # mu: bulk chemical potential -mu * sum_i eta_i. Positive mu favors water over air.
+  mu: 0.0
+
+  # u_film_scale: multiplies sum_i U_film(z_i) * eta_i (slab confinement; see confinement).
+  u_film_scale: 0.25
+
+  # occupancy_mode: "binary" (0=air, 1=water) or "ternary" (air / interfacial / bulk).
+  occupancy_mode: binary
+
+# Slab-edge penalty U_film(z) when occupancy can leave the vitrified band.
+confinement:
+  penalty_outside: 1.0
+  interface_softness_angstrom: 4.0
+
+# -----------------------------------------------------------------------------
+# Hydration / polarity / H-bond patch couplings (protein surface -> lattice)
+# -----------------------------------------------------------------------------
+hydration:
+  # lambda_hp: -lambda_hp * sum_f a_f * h_f * I_f^air  (hydropathy at air-exposed patches)
+  lambda_hp: 0.8
+  # lambda_p:  +lambda_p  * sum_f a_f * p_f * I_f^air  (polarity penalty at air)
+  lambda_p: 0.25
+  # lambda_hb: -lambda_hb * sum_f a_f * b_f * I_f^int (H-bond reward at interfacial water; ternary)
+  lambda_hb: 0.25
+
+# Outward-ray indicators I_f^air, I_f^int from patch centroid along outward normal.
+ray_indicators:
+  ray_max_steps: 48
+  # ray_step_fraction: step length = fraction * lattice spacing h
+  ray_step_fraction: 0.55
+  require_first_hit_solvent_steps: 2
+  outward_ray_step_fraction: 0.5
+
+# -----------------------------------------------------------------------------
+# Film / flexibility couplings on patches
+# -----------------------------------------------------------------------------
+film:
+  lambda_film: 0.3
+  # Gaussian width (Angstrom) for proximity to non-pristine AWI in I_f^film
+  margin_angstrom: 7.0
+
+flex:
+  eta_flex: 0.0
+
+# -----------------------------------------------------------------------------
+# Electrostatics H_el (screened Coulomb placeholder + slab phi0, E0)
+# -----------------------------------------------------------------------------
+electrostatics:
+  # If set, replace depth-dependent epsilon or kappa from the AWI slab profile.
+  homogeneous_epsilon: null
+  homogeneous_kappa: null
+  r_smooth_angstrom: 0.01
+  use_intrinsic_potential: true
+  use_dipole_E0_component: true
+  # COULOMB_SCALE in patches.py (332.0636) unless overridden here:
+  coulomb_scale: null
+
+# -----------------------------------------------------------------------------
+# AWI slab: z in [0, thickness]; bottom = pristine, top = sacrificial film (default cryo story)
+# -----------------------------------------------------------------------------
+slab:
+  thickness_angstrom: 300.0
+  bulk_epsilon: 78.0
+  bulk_rho: 1.0
+  bulk_kappa: 0.0
+
+  bottom:
+    coverage: pristine
+    mechanical_state: fresh
+    mechanical_age: 0.0
+    gamma_N_per_m: 0.0728
+    phi0_surface_volts: 0.03
+
+  top:
+    coverage: protein_sacrificial
+    mechanical_state: viscoelastic_film
+    mechanical_age: 0.6
+    gamma_N_per_m: 0.065
+    phi0_surface_volts: 0.02
+    surface_rho_enhancement: 2.2
+
+# Shared depth-profile builder knobs (each interface unless overridden above).
+awi_profile:
+  extent_angstrom: 40.0
+  dz_angstrom: 0.25
+  decay_length_angstrom: 7.0
+  bulk_epsilon: 78.0
+  surface_epsilon_parallel: 2.5
+  surface_epsilon_perpendicular: 1.5
+  use_tensor_dielectric: true
+  bulk_rho: 1.0
+  surface_rho_enhancement: 1.8
+  phi0_surface_volts: 0.05
+  phi0_decay_length_angstrom: null
+  debye_length_angstrom: null
+  transition_width_angstrom: 2.0
+  transition_center_angstrom: 1.5
+  layer_scale_angstrom: 3.0
+
+# -----------------------------------------------------------------------------
+# Lattice geometry and orientation sampler
+# -----------------------------------------------------------------------------
+lattice:
+  grid_spacing_angstrom: 3.5
+  pad_xy_angstrom: 60.0
+  pad_z_angstrom: 25.0
+  # null => place protein COM near top AWI: thickness - 0.8 * decay_length
+  protein_z_center_angstrom: null
+  z_center_decay_fraction: 0.8
+  canonical_interior_pad_angstrom: 16.0
+
+sampling:
+  n_samples: 600          # used when strategy: uniform
+  seed: 0
+  strategy: hybrid        # uniform | mcmc | hybrid
+  n_uniform: 200          # SO(3) exploration pool (hybrid)
+  beta: auto
+  beta_target_ess: 20.0
+  beta_auto_method: ess
+  mcmc:
+    # fixed_beta | simulated_annealing | replica_exchange (parallel tempering)
+    mode: replica_exchange
+    n_chains: 4
+    steps_per_chain: 1000
+    burn_in: 300
+    thin: 2
+    step_deg: 10.0
+    target_acceptance: 0.28
+    seed_pool: 12
+    annealing:
+      beta_min_fraction: 0.05   # beta_min = fraction * beta_target
+      schedule: geometric
+      n_reheat_cycles: 2          # reheat between cycles to visit new basins
+    replica_exchange:
+      n_replicas: 8
+      swap_interval: 1
+
+# Fast path for orientation / MCMC (vectorized rays, electrostatic cutoff)
+performance:
+  use_fast_evaluator: true
+  electrostatic_pair_cutoff_angstrom: 80.0   # null = all pairs (slower)
+  mcmc_energy_only: true
+  precompute_rotation_invariant_pair: true   # H_el pairwise constant on SO(3)
+  parallel_workers: null                   # null = all CPU cores; 0 = serial
+  parallel_mcmc_chains: true
+  batch_size: 16

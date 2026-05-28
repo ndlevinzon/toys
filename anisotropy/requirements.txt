@@ -1,0 +1,8 @@
+numpy>=1.26
+scipy>=1.11
+scikit-image>=0.22
+matplotlib>=3.8
+pyyaml>=6.0
+tqdm>=4.66
+propka>=3.5
+pyvista>=0.43

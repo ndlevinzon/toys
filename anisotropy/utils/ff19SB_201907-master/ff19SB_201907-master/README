@@ -1,0 +1,32 @@
+This will explain how to install ff19SB and get it working with Amber. 
+It will be included with the Amber release in 2020, but in the meantime this will allow you to use ff19SB with Amber18/19.
+
+Once you download the ff19SB files here, you will see these directories:
+amber_patch: update.201906
+forcefield_files: leaprc.protein.ff19SB, parm19.dat, frcmod.ff19SB, amino19.lib, frcmod.ff19SB_XXX
+test: test_forcefield_parameter and test_MDengine have necessary files for implementation and energy test 
+doc: forcefield_files
+
+How to set up ff19SB for Amber:
+1. compile Amber18+AmberTools19 with all updates applied following the Amber 19 Reference Manual. You cannot use an older version of Amber.
+
+2. go to directory ff19SB_201907 and run copy.sh, this will copy all of the ff19SB files to $AMBERHOME
+
+3. go to $AMBERHOME and run: 
+   ./update_amber --apply-patch=update.201906
+
+4. recompile amber following the Amber 19 Reference Manual (you must recompile or ff19SB will not give correct results!)
+
+5. go to the test/test_forcefield_parameter, run "tleap -f tleap.input" to generate scramble.prmtop. Type "bash run.sh" and "vimdiff single_point_ene.output.ref single_point_ene.output" to check if all energy terms have identical values
+
+6. go to $AMBERHOME/test/ff19SB, type "csh Run" to check if the CPU test passes
+
+7. go to $AMBERHOME/test/cuda/ff19SB, make sure GPU is accessible, type "csh Run SPFP" and "csh Run DPFP" to check if the GPU test passes
+
+8. refer to doc/forcefield_files if you want to implement a non-standard amino acid with ff19SB
+
+9.In order to use ff19SB, source leaprc.protein.ff19SB when you run tleap or xleap.
+
+Please email us if you run into any issues:
+chuan.tian.1@stonybrook.edu
+carlos.simmerling@gmail.com

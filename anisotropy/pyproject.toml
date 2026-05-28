@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "anisotropy"
+version = "0.1.0"
+description = "PDB SAS mesh fitting and shape anisotropy"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.26",
+    "scipy>=1.11",
+    "scikit-image>=0.22",
+    "matplotlib>=3.8",
+    "pyyaml>=6.0",
+    "tqdm>=4.66",
+    "propka>=3.5",
+]
+
+[project.optional-dependencies]
+view = ["pyvista>=0.43"]
+docs = [
+    "sphinx>=7.2",
+    "sphinx-rtd-theme>=2.0",
+    "myst-parser>=2.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["anisotropy*"]

@@ -1,0 +1,15 @@
+{
+  "pdb": "C:\\Users\\ndlev\\OneDrive\\Documents\\Research\\thesis\\toys\\anisotropy\\1CRN.pdb",
+  "n_atoms": 327,
+  "mesh_vertices": 3896,
+  "mesh_faces": 7788,
+  "radius_gyration": 13.223143460296686,
+  "asphericity": 0.41489059475054435,
+  "prolateness": 0.44657113384640523,
+  "lambda_1": 86.15818544975053,
+  "lambda_2": 54.59091398421425,
+  "lambda_3": 34.10242353762227,
+  "axis_length_1": 18.56428673014404,
+  "axis_length_2": 14.777132872680578,
+  "axis_length_3": 11.679456072544179
+}

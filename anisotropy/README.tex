@@ -1,0 +1,404 @@
+% Methods documentation for the anisotropy package.
+% Compile: pdflatex README.tex  (twice if references needed)
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,bm}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{listings}
+\usepackage{microtype}
+
+\hypersetup{colorlinks=true, linkcolor=blue!60!black, citecolor=blue!60!black}
+
+\title{Protein SAS Mesh, Shape Descriptors, and Patch Parameterization\\
+\large \texttt{anisotropy} package (implementation reference)}
+\author{Cryo-EM toys / thesis workflow}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This note defines the geometric and chemical quantities computed by the
+\texttt{anisotropy} Python package: construction of a solvent-accessible surface (SAS)
+triangle mesh from a PDB structure, global shape descriptors (radius of gyration and
+asphericity) from that mesh, and patch-resolved feature vectors for interfacial
+modeling. All formulas match the current source files
+\texttt{sasa.py}, \texttt{mesh.py}, \texttt{shape.py}, and \texttt{patches.py}.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+%=============================================================================
+\section{Input and coordinate frame}
+%=============================================================================
+
+A structure is read from a PDB file as a list of heavy atoms (ATOM records; HETATM
+optional). Each atom $i$ has position $\mathbf{c}_i\in\mathbb{R}^3$ ({\AA}) and
+van der Waals radius $r_i^{\mathrm{vdW}}$ (Bondi radii). A water probe of radius
+$r_{\mathrm{p}}$ (default $r_{\mathrm{p}}=1.4$\,{\AA}) defines the solvent-accessible
+radius $R_i = r_i^{\mathrm{vdW}} + r_{\mathrm{p}}$.
+
+All meshes and descriptors use the same laboratory Cartesian frame as the PDB.
+
+%=============================================================================
+\section{Solvent-accessible surface and mesh formation}
+%=============================================================================
+
+\subsection{Algebraic SAS distance field (exact backend)}
+
+For any grid point $\mathbf{x}$, the \emph{algebraic} SAS distance function is
+\begin{equation}
+  \Phi(\mathbf{x})
+  = \min_i \bigl( \|\mathbf{x}-\mathbf{c}_i\| - R_i \bigr).
+  \label{eq:phi-exact}
+\end{equation}
+Negative values lie inside the union of solvent-accessible spheres; the SAS
+\emph{surface} is the zero level set $\{\mathbf{x}:\Phi(\mathbf{x})=0\}$.
+
+The exact backend samples $\Phi$ on a uniform grid of spacing $h$ covering the
+structure bounding box (with padding), by evaluating \eqref{eq:phi-exact} at every
+voxel center. If the grid would exceed a maximum edge length, $h$ is increased
+automatically.
+
+\subsection{Voxel SAS signed distance field (fast backend)}
+
+For large structures ($N\gtrsim 1.2\times 10^4$ atoms in the \texttt{auto} mode, or
+when \texttt{method=voxel} is selected), an equivalent surface is built by:
+\begin{enumerate}
+  \item Rasterizing the union of spheres of radius $R_i$ onto a boolean grid
+        (voxels marked \emph{inside} if covered by any sphere).
+  \item Computing Euclidean distance transforms:
+        \begin{align}
+          d_{\mathrm{out}}(\mathbf{x}) &= \text{EDT}(\text{outside}), \\
+          d_{\mathrm{in}}(\mathbf{x})  &= \text{EDT}(\text{inside}),
+        \end{align}
+        and forming the signed distance
+        \begin{equation}
+          \mathrm{SDF}(\mathbf{x}) =
+          \begin{cases}
+            -\,d_{\mathrm{in}}(\mathbf{x}), & \mathbf{x}\ \text{inside},\\[2pt]
+            \ \ d_{\mathrm{out}}(\mathbf{x}), & \mathbf{x}\ \text{outside}.
+          \end{cases}
+        \end{equation}
+  \item Optionally applying a Gaussian smooth to the field ($\sigma\approx 0.75$
+        voxels) for numerical stability.
+\end{enumerate}
+The mesh surface is extracted at $\mathrm{SDF}=0$, which approximates the SAS
+envelope used in \eqref{eq:phi-exact}.
+
+\subsection{Isosurface extraction (marching cubes)}
+
+Given a scalar field $F$ on a grid ($F=\Phi$ or $F=\mathrm{SDF}$), the
+\emph{marching-cubes} algorithm (via \texttt{skimage.measure.marching\_cubes})
+extracts a triangle mesh $\mathcal{M}=(\mathcal{V},\mathcal{F})$:
+\begin{itemize}
+  \item vertices $\mathbf{v}_m\in\mathcal{V}$, $m=1,\ldots,V$;
+  \item triangular faces $f_\ell=(i_1,i_2,i_3)\in\mathcal{F}$, $\ell=1,\ldots,F$.
+\end{itemize}
+Vertex positions are shifted from grid indices to {\AA} using the grid origin and
+spacing $h$.
+
+\subsection{Iterative refinement}
+
+The routine \texttt{fit\_iterative\_mesh} repeats surface extraction at a sequence
+of grid spacings (defaults $h\in\{2.5,\,1.5,\,1.0\}$\,\AA):
+\begin{enumerate}
+  \item build $F$ at resolution $h$;
+  \item extract $\mathcal{M}$ at level $F=0$;
+  \item apply Laplacian smoothing on vertex positions (uniform weights on the mesh
+        graph), with iteration count increasing on finer passes (defaults
+        $2,3,4,\ldots$).
+\end{enumerate}
+Each pass replaces the previous mesh; the finest pass is retained. Smoothing uses
+\begin{equation}
+  \mathbf{v}_m^{(t+1)}
+  = \mathbf{v}_m^{(t)}
+  + \lambda \left(
+      \frac{1}{|\mathcal{N}(m)|}\sum_{n\in\mathcal{N}(m)} \mathbf{v}_n^{(t)}
+      - \mathbf{v}_m^{(t)}
+    \right),
+  \label{eq:laplacian}
+\end{equation}
+with $\lambda=0.45$ and $\mathcal{N}(m)$ the set of vertices adjacent to $m$ on the
+mesh.
+
+\subsection{Triangle geometry}
+
+For face $\ell$ with vertices $\mathbf{v}_1,\mathbf{v}_2,\mathbf{v}_3$, the
+implementation uses
+\begin{align}
+  \mathbf{A}_\ell &= \tfrac{1}{2}(\mathbf{v}_2-\mathbf{v}_1)\times(\mathbf{v}_3-\mathbf{v}_1),\\
+  a_\ell &= \|\mathbf{A}_\ell\|, \qquad
+  \hat{\mathbf{n}}_\ell = \frac{\mathbf{A}_\ell}{\|\mathbf{A}_\ell\|},\\
+  \mathbf{r}_\ell &= \tfrac{1}{3}(\mathbf{v}_1+\mathbf{v}_2+\mathbf{v}_3),
+\end{align}
+where $a_\ell$ is the face area and $\hat{\mathbf{n}}_\ell$ the outward unit normal
+(orientation follows the vertex ordering from marching cubes).
+
+%=============================================================================
+\section{Global shape descriptors from the mesh}
+%=============================================================================
+
+Shape descriptors are computed from the \textbf{mesh vertex sample} of the SAS
+surface, not from atomic centers alone. This matches the idea that global
+anisotropy is a property of the \emph{surface envelope}.
+
+\subsection{Vertex weights}
+
+Let $\mathbf{v}_m$ be mesh vertices and $\mathcal{F}$ the set of triangular faces.
+Each vertex receives a weight $w_m$ proportional to one third of the sum of areas of
+incident triangles (then floored and normalized):
+\begin{equation}
+  \tilde{w}_m = \frac{w_m}{\sum_j w_j}, \qquad \sum_m \tilde{w}_m = 1.
+\end{equation}
+
+\subsection{Center and gyration tensor}
+
+The reference center is
+\begin{equation}
+  \mathbf{r}_c = \sum_{m=1}^{V} \tilde{w}_m\, \mathbf{v}_m.
+\end{equation}
+Define centered coordinates $\boldsymbol{\rho}_m = \mathbf{v}_m - \mathbf{r}_c$.
+The symmetric \textbf{gyration tensor} (second moment matrix) is
+\begin{equation}
+  \mathbf{Q}
+  = \sum_{m=1}^{V} \tilde{w}_m\, \boldsymbol{\rho}_m \boldsymbol{\rho}_m^{\mathsf{T}},
+  \qquad Q_{ab} = \sum_m \tilde{w}_m\, \rho_{m,a}\,\rho_{m,b}.
+  \label{eq:gyration}
+\end{equation}
+Units are {\AA}$^2$ because $\tilde{w}_m$ are dimensionless.
+
+Diagonalize $\mathbf{Q}$:
+\begin{equation}
+  \mathbf{Q}\,\mathbf{e}_n = \lambda_n\,\mathbf{e}_n,
+  \qquad n\in\{1,2,3\},
+\end{equation}
+with eigenvalues ordered $\lambda_1\ge\lambda_2\ge\lambda_3\ge 0$.
+The principal axes are unit vectors $\mathbf{e}_1,\mathbf{e}_2,\mathbf{e}_3$ (rows of
+the eigenvector matrix in code).
+
+\subsection{Radius of gyration}
+
+The implementation defines
+\begin{equation}
+  \boxed{
+    R_g = \sqrt{\lambda_1+\lambda_2+\lambda_3}
+        = \sqrt{\mathrm{tr}(\mathbf{Q})}.
+  }
+  \label{eq:Rg}
+\end{equation}
+Thus $R_g^2$ is the total weighted mean-square displacement of surface vertices about
+$\mathbf{r}_c$ (summed over all principal directions). This is the gyration radius
+associated with $\mathbf{Q}$, not the radius of a sphere with equal volume.
+
+Effective semi-axis lengths reported in code:
+$L_n = 2\sqrt{\lambda_n}$.
+
+\subsection{Asphericity (not Wadell sphericity)}
+
+The code computes \textbf{asphericity} $\mathcal{A}$, \emph{not} the classical
+Wadell sphericity $\psi = \pi^{1/3}(6V)^{2/3}/A$.
+Let $\Sigma=\lambda_1+\lambda_2+\lambda_3$. Then
+\begin{equation}
+  \boxed{
+    \mathcal{A}
+    = 1 - \frac{3\lambda_3}{\Sigma}
+    = 1 - \frac{3\lambda_3}{\lambda_1+\lambda_2+\lambda_3}.
+  }
+  \label{eq:asphericity}
+\end{equation}
+\begin{itemize}
+  \item $\mathcal{A}=0$ when $\lambda_1=\lambda_2=\lambda_3$ (isotropic second moments).
+  \item $\mathcal{A}\to 1$ when $\lambda_3\ll\lambda_1,\lambda_2$ (strong elongation
+        in one principal direction).
+\end{itemize}
+If you need \emph{sphericity} in the sense $\psi\in(0,1]$ with $\psi=1$ for a perfect
+sphere, use a separate definition based on mesh volume and area; it is \textbf{not}
+currently implemented.
+
+\subsection{Prolateness (also reported)}
+
+The package additionally reports
+\begin{equation}
+  \mathcal{P}
+  = \frac{3\lambda_1-\Sigma}{2\Sigma}
+    - \frac{3\lambda_3-\Sigma}{2\Sigma},
+\end{equation}
+as a signed measure related to prolate versus oblate ellipsoid character.
+
+\subsection{Curvature on patches (used later)}
+
+Per-vertex mean curvature $H$ and Gaussian curvature $K$ are obtained from the mesh
+via VTK/PyVista (\texttt{curvature} filters) and averaged over patch vertices.
+
+%=============================================================================
+\section{Patch segmentation and parameterization}
+%=============================================================================
+
+\subsection{Patch decomposition}
+
+Faces of $\mathcal{M}$ are grouped into patches by \textbf{region growing} on the
+dual graph: two adjacent faces belong to the same patch if the angle between their
+unit normals satisfies
+\begin{equation}
+  \hat{\mathbf{n}}_\ell \cdot \hat{\mathbf{n}}_{\ell'} \ge \cos\theta_{\max},
+\end{equation}
+with default $\theta_{\max}=25^\circ$. Seeds are processed in descending face area.
+Patches with total area below $a_{\min}$ (default $50$\,\AA$^2$) are merged into a
+neighboring patch.
+
+Each patch $f$ has a set of face indices $\mathcal{F}_f$ and inherits triangle
+geometry from Section~2.5.
+
+\subsection{Patch feature vector}
+
+The modeling proposal assigns each patch a vector
+\begin{equation}
+  \mathbf{x}_f
+  = \bigl(
+    a_f,\,
+    \mathbf{r}_f,\,
+    \hat{\mathbf{n}}_f,\,
+    H_f,\,
+    K_f,\,
+    q_f,\,
+    \phi_f,\,
+    \mathrm{pK}_{a,f},\,
+    h_f,\,
+    p_f,\,
+    b_f,\,
+    \boldsymbol{\mu}_f,\,
+    u_f
+  \bigr).
+\end{equation}
+Table~\ref{tab:patch} lists definitions implemented in \texttt{patches.py}.
+
+\begin{table}[ht]
+  \centering
+  \caption{Patch descriptors $\mathbf{x}_f$ (implementation).}
+  \label{tab:patch}
+  \begin{tabular}{@{}llp{7.2cm}@{}}
+    \toprule
+    Symbol & Code name & Definition \\
+    \midrule
+    $a_f$ & \texttt{area}
+      & $a_f=\sum_{\ell\in\mathcal{F}_f} a_\ell$ \\
+    $\mathbf{r}_f$ & \texttt{centroid}
+      & Area-weighted mean of face centroids $\mathbf{r}_\ell$ \\
+    $\hat{\mathbf{n}}_f$ & \texttt{normal}
+      & Area-weighted mean of $\hat{\mathbf{n}}_\ell$, then normalized \\
+    $H_f$, $K_f$ & \texttt{mean\_curvature}, \texttt{gaussian\_curvature}
+      & Mean over unique vertices of faces in patch $f$ \\
+    $q_f$ & \texttt{charge}
+      & $\sum_{i\in\mathcal{I}_f} q_i(pH)$; see below \\
+    $\phi_f$ & \texttt{potential}
+      & $\sum_{i\in\mathcal{I}_f} k\, q_i / \max(\|\mathbf{c}_i-\mathbf{r}_f\|,1)$ \\
+    $\mathrm{pK}_{a,f}$ & \texttt{pka\_acid}
+      & Mean residue p$K_\mathrm{a}$ over titratable types in patch \\
+    $h_f$ & \texttt{hydropathy}
+      & $\bar{h}_{\mathrm{KD}}\,\|\hat{\mathbf{n}}_f\|$ (directional hydrophobicity) \\
+    $p_f$ & \texttt{polar\_density}
+      & (\# polar residues in patch)/(\# atoms in patch) \\
+    $b_f$ & \texttt{hbond\_score}
+      & (donors$+$acceptors per residue)/(\# atoms in patch) \\
+    $\boldsymbol{\mu}_f$ & \texttt{dipole}
+      & $\sum_{i\in\mathcal{I}_f} q_i\,(\mathbf{c}_i-\mathbf{r}_f)$ \\
+    $u_f$ & \texttt{softness}
+      & Mean B-factor$/100$ if PDB B-factors exist; else curvature proxy \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsection{Atom-to-patch assignment}
+
+Let $\mathbf{r}_\ell$ be face centroids. Each atom $i$ is assigned to the patch of
+its nearest face centroid:
+\begin{equation}
+  f(i) = \arg\min_\ell \|\mathbf{c}_i - \mathbf{r}_\ell\|,
+  \qquad
+  \mathcal{I}_f = \{ i : f(i)=f \}.
+\end{equation}
+All chemical sums run over $i\in\mathcal{I}_f$.
+
+\subsection{Charge and protonation at pH}
+
+For residue type $R$, a simplified Henderson--Hasselbalch model gives fractional
+charge $q_R(pH)$ (acidic residues negative, basic positive). Each atom carries a
+scaled partial charge proxy $q_i(pH)$ derived from its residue. The patch charge is
+$q_f=\sum_{i\in\mathcal{I}_f} q_i(pH)$.
+
+\subsection{Electrostatic potential proxy}
+
+With Coulomb prefactor $k=332.0636$\,(kcal\,mol$^{-1}$\,\AA\,e$^{-2}$) in code,
+\begin{equation}
+  \phi_f = \sum_{i\in\mathcal{I}_f} \frac{k\, q_i(pH)}{\max(\|\mathbf{c}_i-\mathbf{r}_f\|,1\,\mathrm{\AA})}.
+\end{equation}
+This is a \emph{coarse} pairwise sum, not a Poisson--Boltzmann solve (APBS).
+
+\subsection{Hydropathy and interface direction}
+
+Kyte--Doolittle hydropathy $h^{\mathrm{KD}}_R$ is assigned per residue ($h>0$
+hydrophobic). For patch $f$,
+\begin{equation}
+  \bar{h}_{\mathrm{KD}} = \frac{1}{|\mathcal{I}_f|}\sum_{i\in\mathcal{I}_f} h^{\mathrm{KD}}_{R(i)},
+  \qquad
+  h_f = \bar{h}_{\mathrm{KD}}\,\|\hat{\mathbf{n}}_f\|.
+\end{equation}
+Thus hydrophobic character is weighted by how much the patch normal participates
+in the outward direction (directional presentation to the interface).
+
+\subsection{Hydrogen-bond channel}
+
+Per-residue donor and acceptor counts $(d_R,a_R)$ are tabulated. Then
+\begin{equation}
+  b_f = \frac{\sum_{i\in\mathcal{I}_f}(d_{R(i)}+a_{R(i)})}{|\mathcal{I}_f|}.
+\end{equation}
+
+\subsection{Softness}
+
+If crystallographic B-factors $B_i$ are present in the PDB,
+\begin{equation}
+  u_f = \frac{1}{100\,|\mathcal{I}_f|}\sum_{i\in\mathcal{I}_f} B_i.
+\end{equation}
+Otherwise a heuristic combines mean curvature and polarity:
+\begin{equation}
+  u_f = \min\!\Bigl(1,\; 2|H_f| + 0.3(1-\min(p_f,1))\Bigr).
+\end{equation}
+
+%=============================================================================
+\section{Software entry points}
+%=============================================================================
+
+\begin{itemize}
+  \item \texttt{fit\_protein\_mesh.py} --- PDB $\to$ SAS mesh (PLY); global
+        $R_g$, $\mathcal{A}$.
+  \item \texttt{parameterize\_mesh.py} --- mesh $+$ PDB $\to$
+        \texttt{patch\_features.npz} and optional JSON.
+  \item Python API: \texttt{fit\_iterative\_mesh}, \texttt{shape\_anisotropy\_from\_mesh},
+        \texttt{parameterize\_mesh}.
+\end{itemize}
+
+\paragraph{Recommended interpreter.}
+Use the toys virtual environment:
+\texttt{toys/.venv/Scripts/python.exe} (Python~3.12).
+Plain \texttt{python} on some Windows installs resolves to MGLTools Python~2.7.
+
+%=============================================================================
+\section{Summary of key formulas}
+%=============================================================================
+
+\begin{align}
+  \Phi(\mathbf{x}) &= \min_i(\|\mathbf{x}-\mathbf{c}_i\|-R_i),
+  &\text{(exact SAS)} \\[4pt]
+  \mathbf{Q} &= \sum_m \tilde{w}_m\,\boldsymbol{\rho}_m\boldsymbol{\rho}_m^{\mathsf{T}},
+  &\text{(gyration tensor)} \\[4pt]
+  R_g &= \sqrt{\mathrm{tr}(\mathbf{Q})},
+  &\text{(radius of gyration)} \\[4pt]
+  \mathcal{A} &= 1 - \frac{3\lambda_3}{\lambda_1+\lambda_2+\lambda_3},
+  &\text{(asphericity)}.
+\end{align}
+
+\end{document}
