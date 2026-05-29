@@ -880,7 +880,7 @@ def main_impl(args: argparse.Namespace, run: RunSession) -> None:
         "n_samples": n_samples,
         "sampling_strategy": strategy,
         "n_uniform": n_uniform,
-        "n_mcmc_kept": int(np.sum(mcmc_mask)),
+        "n_mcmc_kept": int(np.sum(refined_mask)),
         "mcmc_summary": (
             {
                 "mean_acceptance_rate": mcmc_summary.mean_acceptance_rate,
