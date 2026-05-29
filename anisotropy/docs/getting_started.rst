@@ -1,17 +1,17 @@
 Getting started
 ===============
 
-Python environment
-------------------
+Python environment (Conda)
+----------------------------
 
-Use **Python 3.10+**. The cryo-EM **toys** project venv is recommended:
+Use **Python 3.12** via conda-forge. From the ``anisotropy/`` directory:
 
-.. code-block:: powershell
+.. code-block:: bash
 
-   cd ..\toys
-   py -3 -m venv .venv
-   .\.venv\Scripts\pip install -r requirements.txt
-   .\.venv\Scripts\pip install -e "..\anisotropy[view,docs]"
+   conda env create -f environment.yml
+   conda activate anisotropy
+
+Full instructions: ``CONDA.md``. HPC headless: ``environment-hpc.yml``.
 
 Quick pipeline
 --------------

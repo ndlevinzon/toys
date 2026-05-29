@@ -1,0 +1,21 @@
+# Slurm / headless clusters — same as environment.yml but without PyVista/VTK.
+# Use with orientation_sample.py --no-render.
+#
+#   conda env create -f environment-hpc.yml
+#   conda activate anisotropy-hpc
+
+name: anisotropy-hpc
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - numpy>=1.26
+  - scipy>=1.11
+  - scikit-image>=0.22
+  - matplotlib>=3.8
+  - pyyaml>=6
+  - tqdm>=4.66
+  - propka>=3.5
+  - pip
+  - pip:
+      - -e .

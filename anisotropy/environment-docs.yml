@@ -1,0 +1,10 @@
+# Add Sphinx to an existing env:
+#   conda activate anisotropy
+#   conda env update -n anisotropy -f environment-docs.yml
+
+channels:
+  - conda-forge
+dependencies:
+  - sphinx>=7.2
+  - sphinx-rtd-theme>=2.0
+  - myst-parser>=2.0

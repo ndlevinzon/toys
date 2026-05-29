@@ -1,0 +1,30 @@
+# HPC-oriented overrides — include after copying from ../ising_params.yaml
+# Usage: orientation_sample.py ... --ising-params hpc/ising_params.hpc.yaml
+#
+# Or merge these keys into a full copy of ising_params.yaml on the cluster.
+
+meta:
+  description: "HPC profile — fixed-beta MCMC, parallel CPU, no rendering"
+
+sampling:
+  strategy: hybrid
+  n_uniform: 400
+  beta: auto
+  beta_target_ess: 20.0
+  mcmc:
+    # fixed_beta uses parallel_mcmc_chains; replica_exchange is serial per replica
+    mode: fixed_beta
+    n_chains: 8
+    steps_per_chain: 3000
+    burn_in: 500
+    thin: 2
+    step_deg: 10.0
+    seed_pool: 16
+
+performance:
+  use_fast_evaluator: true
+  precompute_rotation_invariant_pair: true
+  electrostatic_pair_cutoff_angstrom: 80.0
+  mcmc_energy_only: true
+  parallel_workers: null          # set via CLI --parallel-workers $SLURM_CPUS_PER_TASK
+  parallel_mcmc_chains: true

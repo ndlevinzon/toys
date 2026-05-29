@@ -1,0 +1,30 @@
+# Conda environment for the full anisotropy pipeline (local + HPC login nodes).
+#
+# Create (run from this directory — the folder containing pyproject.toml):
+#   conda env create -f environment.yml
+#   conda activate anisotropy
+#
+# Update after pulling new code:
+#   conda env update -f environment.yml --prune
+#   pip install -e . --no-deps
+#
+# Headless HPC compute nodes: use environment-hpc.yml (no PyVista).
+
+name: anisotropy
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.12
+  - numpy>=1.26
+  - scipy>=1.11
+  - scikit-image>=0.22
+  - matplotlib>=3.8
+  - pyyaml>=6
+  - tqdm>=4.66
+  - propka>=3.5
+  - pyvista>=0.43
+  - vtk
+  - pip
+  - pip:
+      - -e .

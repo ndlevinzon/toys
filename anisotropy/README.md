@@ -26,17 +26,28 @@ Educational research code for **solvent-accessible surface (SAS) meshing**, **pa
 
 ---
 
-## Quick install (standalone repo)
+## Quick install (Conda — recommended)
+
+Requires [Miniconda](https://docs.conda.io/en/latest/miniconda.html) or [Miniforge](https://github.com/conda-forge/miniforge). Full details: **[CONDA.md](CONDA.md)**.
 
 ```powershell
 git clone https://github.com/YOUR_USER/YOUR_REPO.git
-cd YOUR_REPO
-py -3 -m venv .venv
-.\.venv\Scripts\pip install -U pip
-.\.venv\Scripts\pip install -e ".[view]"
+cd YOUR_REPO\anisotropy
+conda env create -f environment.yml
+conda activate anisotropy
 ```
 
+Headless clusters: `conda env create -f environment-hpc.yml` → `conda activate anisotropy-hpc`.
+
 Configuration defaults: [`ising_params.yaml`](ising_params.yaml).
+
+### Pip-only alternative
+
+```powershell
+py -3 -m venv .venv
+.\.venv\Scripts\pip install -r requirements.txt
+.\.venv\Scripts\pip install -e .
+```
 
 ---
 
@@ -45,9 +56,10 @@ Configuration defaults: [`ising_params.yaml`](ising_params.yaml).
 Use your PDB and a fitted PLY mesh (or `--fit-mesh` on step 2):
 
 ```powershell
-.\.venv\Scripts\python fit_protein_mesh.py 1CRN.pdb -o 1crn_sas.ply
-.\.venv\Scripts\python parameterize_mesh.py 1CRN.pdb 1crn_sas.ply -o patch_features.npz --pka-source propka
-.\.venv\Scripts\python orientation_sample.py 1CRN.pdb 1crn_sas.ply --outdir orientation_diagnostics --no-render
+conda activate anisotropy
+python fit_protein_mesh.py 1CRN.pdb -o 1crn_sas.ply
+python parameterize_mesh.py 1CRN.pdb 1crn_sas.ply -o patch_features.npz --pka-source propka
+python orientation_sample.py 1CRN.pdb 1crn_sas.ply --outdir orientation_diagnostics --no-render
 ```
 
 Console shows a **progress bar only**; details append to **`anisotropy_run.log`**.

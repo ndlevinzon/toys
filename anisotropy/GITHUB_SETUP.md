@@ -37,6 +37,9 @@ parameterize_mesh.py
 orientation_sample.py
 visualize_patches.py
 ising_params.yaml              # Default Hamiltonian / sampler config
+environment.yml                # Conda: full stack
+environment-hpc.yml            # Conda: headless / Slurm
+CONDA.md
 pyproject.toml
 requirements.txt
 LICENSE
@@ -106,22 +109,15 @@ Do **not** commit these (`.gitignore` already covers most):
 
 ---
 
-## One-time setup after clone
+## One-time setup after clone (Conda)
 
 ```powershell
 cd anisotropy
-py -3 -m venv .venv
-.\.venv\Scripts\pip install -U pip
-.\.venv\Scripts\pip install -e ".[view]"
-.\.venv\Scripts\pip install -r requirements.txt
+conda env create -f environment.yml
+conda activate anisotropy
 ```
 
-Or minimal install from `requirements.txt` only:
-
-```powershell
-.\.venv\Scripts\pip install -r requirements.txt
-.\.venv\Scripts\pip install -e .
-```
+See [CONDA.md](CONDA.md). Pip-only fallback: `pip install -r requirements.txt && pip install -e .`
 
 ### Smoke test
 
