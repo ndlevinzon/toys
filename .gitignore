@@ -1,1 +1,47 @@
-/toys
+# =============================================================================
+# toys monorepo — track CODE on GitHub; keep WORK local (see GIT_WORKFLOW.md)
+# =============================================================================
+
+# --- Python / tooling (everywhere) ---
+**/.venv/
+**/venv/
+**/__pycache__/
+**/*.egg-info/
+**/.eggs/
+**/dist/
+**/build/
+
+# --- IDE / OS ---
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# --- anisotropy: local research work (never publish) ---
+anisotropy/*.pdb
+anisotropy/*.ply
+anisotropy/*.npz
+anisotropy/**/*.pdb
+anisotropy/**/*.ply
+anisotropy/**/*.npz
+anisotropy/**/*.mrc
+anisotropy/**/*.mrcs
+anisotropy/**/*.log
+anisotropy/orientation_diagnostics/
+anisotropy/_test*/
+anisotropy/_tmp*/
+anisotropy/*.png
+!anisotropy/docs/**/*.png
+
+# --- toys/ cryo projection subproject (local data) ---
+toys/**/*.mrc
+toys/**/*.mrcs
+toys/**/*.star
+toys/datasets/
+toys/output/
+
+# ff19SB upstream test suite (not needed at runtime)
+anisotropy/utils/ff19SB_201907-master/**/test/
+
+# Sphinx build
+anisotropy/docs/_build/

@@ -28,11 +28,13 @@ _tmp*/
 *.png
 !docs/**/*.png
 
-# Local structure data (add your own PDB/PLY; do not commit large runs by default)
-# Uncomment if you want to exclude all structures from git:
-# *.pdb
-# *.ply
-# *.npz
+# Local structure data (see repo root GIT_WORKFLOW.md)
+*.pdb
+*.ply
+*.npz
+*.mrc
+*.mrcs
+*.log
 
 # Sphinx build
 docs/_build/
