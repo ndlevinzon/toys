@@ -38,12 +38,96 @@ class DistanceFieldGrid:
 
     def world_coordinates(self) -> np.ndarray:
         """(nx, ny, nz, 3) physical coordinates for each voxel center."""
-        nx, ny, nz = self.values.shape
-        xs = self.origin[0] + np.arange(nx) * self.spacing
-        ys = self.origin[1] + np.arange(ny) * self.spacing
-        zs = self.origin[2] + np.arange(nz) * self.spacing
+        xs, ys, zs = _axis_coordinates(self.origin, self.spacing, self.values.shape)
         xx, yy, zz = np.meshgrid(xs, ys, zs, indexing="ij")
         return np.stack([xx, yy, zz], axis=-1)
+
+
+def _axis_coordinates(
+    origin: np.ndarray, spacing: float, shape: tuple[int, int, int]
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """1D voxel-center coordinates along each axis."""
+    nx, ny, nz = (int(s) for s in shape)
+    xs = origin[0] + np.arange(nx, dtype=np.float64) * spacing
+    ys = origin[1] + np.arange(ny, dtype=np.float64) * spacing
+    zs = origin[2] + np.arange(nz, dtype=np.float64) * spacing
+    return xs, ys, zs
+
+
+def _grid_from_bounds(
+    bb_min: np.ndarray,
+    bb_max: np.ndarray,
+    *,
+    resolution: float,
+    max_grid_dim: int,
+) -> tuple[np.ndarray, float, tuple[int, int, int]]:
+    extent = bb_max - bb_min
+    spacing = float(resolution)
+    dims = np.ceil(extent / spacing).astype(int) + 1
+    while dims.max() > max_grid_dim:
+        spacing *= 1.15
+        dims = np.ceil(extent / spacing).astype(int) + 1
+    origin = bb_min.copy()
+    return origin, spacing, (int(dims[0]), int(dims[1]), int(dims[2]))
+
+
+def _atom_voxel_slices(
+    center: np.ndarray,
+    radius: float,
+    origin: np.ndarray,
+    spacing: float,
+    dims: tuple[int, int, int],
+) -> tuple[slice, slice, slice]:
+    """Voxel index slices covering the sphere bounding box (inclusive)."""
+    nx, ny, nz = dims
+    lo = origin
+    sp = spacing
+    i0 = max(0, int(np.floor((center[0] - radius - lo[0]) / sp)))
+    i1 = min(nx - 1, int(np.ceil((center[0] + radius - lo[0]) / sp)))
+    j0 = max(0, int(np.floor((center[1] - radius - lo[1]) / sp)))
+    j1 = min(ny - 1, int(np.ceil((center[1] + radius - lo[1]) / sp)))
+    k0 = max(0, int(np.floor((center[2] - radius - lo[2]) / sp)))
+    k1 = min(nz - 1, int(np.ceil((center[2] + radius - lo[2]) / sp)))
+    return slice(i0, i1 + 1), slice(j0, j1 + 1), slice(k0, k1 + 1)
+
+
+def _phi_sphere_on_grid(
+    center: np.ndarray,
+    radius: float,
+    xs: np.ndarray,
+    ys: np.ndarray,
+    zs: np.ndarray,
+    sl_x: slice,
+    sl_y: slice,
+    sl_z: slice,
+) -> np.ndarray:
+    """
+    ||x - c|| - r on a sub-grid via separable broadcasting (no (nx,ny,nz,3) buffer).
+    """
+    dx = xs[sl_x] - center[0]
+    dy = ys[sl_y] - center[1]
+    dz = zs[sl_z] - center[2]
+    return np.sqrt(
+        dx[:, None, None] ** 2 + dy[None, :, None] ** 2 + dz[None, None, :] ** 2
+    ) - radius
+
+
+def _accumulate_sas_phi(
+    phi: np.ndarray,
+    centers: np.ndarray,
+    radii: np.ndarray,
+    origin: np.ndarray,
+    spacing: float,
+) -> None:
+    """In-place Φ = min_i (||x-c_i|| - r_i) using per-atom local sub-grids."""
+    xs, ys, zs = _axis_coordinates(origin, spacing, phi.shape)
+    dims = phi.shape
+    for center, radius in zip(centers, radii):
+        sl_x, sl_y, sl_z = _atom_voxel_slices(center, float(radius), origin, spacing, dims)
+        if sl_x.start >= sl_x.stop or sl_y.start >= sl_y.stop or sl_z.start >= sl_z.stop:
+            continue
+        local = _phi_sphere_on_grid(center, float(radius), xs, ys, zs, sl_x, sl_y, sl_z)
+        np.minimum(phi[sl_x, sl_y, sl_z], local, out=phi[sl_x, sl_y, sl_z])
 
 
 def build_sasa_distance_field(
@@ -67,49 +151,13 @@ def build_sasa_distance_field(
     radii = structure.vdw_radii + float(probe_radius)
     bb_min, bb_max = structure.bounding_box(padding=padding + float(radii.max()))
 
-    extent = bb_max - bb_min
-    spacing = float(resolution)
-    dims = np.ceil(extent / spacing).astype(int) + 1
-
-    while dims.max() > max_grid_dim:
-        spacing *= 1.15
-        dims = np.ceil(extent / spacing).astype(int) + 1
-
-    nx, ny, nz = int(dims[0]), int(dims[1]), int(dims[2])
-    origin = bb_min.copy()
-
-    coords = np.empty((nx, ny, nz, 3), dtype=np.float64)
-    xs = origin[0] + np.arange(nx) * spacing
-    ys = origin[1] + np.arange(ny) * spacing
-    zs = origin[2] + np.arange(nz) * spacing
-    xx, yy, zz = np.meshgrid(xs, ys, zs, indexing="ij")
-    coords[..., 0] = xx
-    coords[..., 1] = yy
-    coords[..., 2] = zz
-
-    phi = np.full((nx, ny, nz), np.inf, dtype=np.float64)
-    for center, radius in zip(centers, radii):
-        dist = np.linalg.norm(coords - center, axis=-1)
-        phi = np.minimum(phi, dist - radius)
+    origin, spacing, dims = _grid_from_bounds(
+        bb_min, bb_max, resolution=resolution, max_grid_dim=max_grid_dim
+    )
+    phi = np.full(dims, np.inf, dtype=np.float64)
+    _accumulate_sas_phi(phi, centers, radii, origin, spacing)
 
     return DistanceFieldGrid(values=phi.astype(np.float32), origin=origin, spacing=spacing)
-
-
-def _grid_from_bounds(
-    bb_min: np.ndarray,
-    bb_max: np.ndarray,
-    *,
-    resolution: float,
-    max_grid_dim: int,
-) -> tuple[np.ndarray, float, tuple[int, int, int]]:
-    extent = bb_max - bb_min
-    spacing = float(resolution)
-    dims = np.ceil(extent / spacing).astype(int) + 1
-    while dims.max() > max_grid_dim:
-        spacing *= 1.15
-        dims = np.ceil(extent / spacing).astype(int) + 1
-    origin = bb_min.copy()
-    return origin, spacing, (int(dims[0]), int(dims[1]), int(dims[2]))
 
 
 _SPHERE_OFFSETS_CACHE: dict[int, np.ndarray] = {}
@@ -134,6 +182,30 @@ def _sphere_offsets(radius_vox: int) -> np.ndarray:
         offsets = np.stack([dx[mask], dy[mask], dz[mask]], axis=1).astype(np.int32)
     _SPHERE_OFFSETS_CACHE[radius_vox] = offsets
     return offsets
+
+
+def _paint_voxel_spheres(
+    inside: np.ndarray,
+    centers_vox: np.ndarray,
+    radii_vox: np.ndarray,
+) -> None:
+    """Rasterize union of spheres onto ``inside`` (batched by quantized radius)."""
+    nx, ny, nz = inside.shape
+    bounds = np.array([nx, ny, nz], dtype=np.int32)
+
+    for r in np.unique(radii_vox):
+        r_int = int(max(r, 0))
+        atom_mask = radii_vox == r
+        if not np.any(atom_mask):
+            continue
+        cents = centers_vox[atom_mask]
+        offsets = _sphere_offsets(r_int)
+        # (n_atoms, n_offsets, 3)
+        ijk = cents[:, None, :] + offsets[None, :, :]
+        ijk = ijk.reshape(-1, 3)
+        valid = (ijk >= 0).all(axis=1) & (ijk < bounds).all(axis=1)
+        ijk = ijk[valid]
+        inside[ijk[:, 0], ijk[:, 1], ijk[:, 2]] = True
 
 
 def build_sasa_signed_distance_field_voxel(
@@ -171,29 +243,11 @@ def build_sasa_signed_distance_field_voxel(
         resolution=resolution,
         max_grid_dim=max_grid_dim,
     )
-    nx, ny, nz = dims
 
-    inside = np.zeros((nx, ny, nz), dtype=bool)
-
-    # Quantize to voxel radii; cache offsets per integer radius.
+    inside = np.zeros(dims, dtype=bool)
     radii_vox = np.ceil(radii / spacing).astype(np.int32)
     centers_vox = np.rint((centers - origin.reshape(1, 3)) / spacing).astype(np.int32)
-
-    for c_vox, r_vox in zip(centers_vox, radii_vox):
-        r = int(max(r_vox, 0))
-        offsets = _sphere_offsets(r)
-        ijk = offsets + c_vox.reshape(1, 3)
-        # Clip to grid bounds.
-        valid = (
-            (ijk[:, 0] >= 0)
-            & (ijk[:, 0] < nx)
-            & (ijk[:, 1] >= 0)
-            & (ijk[:, 1] < ny)
-            & (ijk[:, 2] >= 0)
-            & (ijk[:, 2] < nz)
-        )
-        ijk = ijk[valid]
-        inside[ijk[:, 0], ijk[:, 1], ijk[:, 2]] = True
+    _paint_voxel_spheres(inside, centers_vox, radii_vox)
 
     # Signed distance transform in Å.
     dist_out = ndimage.distance_transform_edt(~inside).astype(np.float64) * spacing
@@ -237,6 +291,7 @@ def build_sasa_distance_field_auto(
         max_grid_dim=max_grid_dim,
     )
 
+
 def estimate_sasa_area(
     structure: ProteinStructure,
     *,
@@ -248,7 +303,7 @@ def estimate_sasa_area(
 
     Educational estimate; not calibrated to analytical Lee–Richards.
     """
-    grid = build_sasa_distance_field(
+    grid = build_sasa_distance_field_auto(
         structure,
         resolution=resolution,
         probe_radius=probe_radius,
@@ -265,11 +320,9 @@ def mask_inside_vdw(
     grid: DistanceFieldGrid,
 ) -> np.ndarray:
     """Boolean mask: voxel centers inside the union of vdW spheres."""
-    coords = grid.world_coordinates()
+    xs, ys, zs = _axis_coordinates(grid.origin, grid.spacing, grid.shape)
     phi_vdw = np.full(grid.shape, np.inf, dtype=np.float64)
-    for center, radius in zip(structure.centers, structure.vdw_radii):
-        dist = np.linalg.norm(coords - center, axis=-1)
-        phi_vdw = np.minimum(phi_vdw, dist - radius)
+    _accumulate_sas_phi(phi_vdw, structure.centers, structure.vdw_radii, grid.origin, grid.spacing)
     return phi_vdw < 0.0
 
 

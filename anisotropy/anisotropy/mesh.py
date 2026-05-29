@@ -82,6 +82,24 @@ def _vertex_neighbors(n_vertices: int, faces: np.ndarray) -> list[list[int]]:
     return [sorted(s) for s in nbrs]
 
 
+def _neighbor_index_table(
+    neighbors: list[list[int]],
+) -> tuple[np.ndarray, np.ndarray]:
+    """Pad neighbor lists to (n_vertices, max_degree) for vectorized gathers."""
+    n_vertices = len(neighbors)
+    max_deg = max((len(n) for n in neighbors), default=0)
+    if max_deg == 0:
+        return np.zeros((n_vertices, 0), dtype=np.int64), np.zeros(n_vertices, dtype=bool)
+    nbr_idx = np.zeros((n_vertices, max_deg), dtype=np.int64)
+    mask = np.zeros((n_vertices, max_deg), dtype=bool)
+    for i, idx in enumerate(neighbors):
+        if not idx:
+            continue
+        nbr_idx[i, : len(idx)] = idx
+        mask[i, : len(idx)] = True
+    return nbr_idx, mask
+
+
 def laplacian_smooth(
     vertices: np.ndarray,
     faces: np.ndarray,
@@ -93,14 +111,18 @@ def laplacian_smooth(
     if iterations < 1:
         return vertices.copy()
     neighbors = _vertex_neighbors(vertices.shape[0], faces)
+    nbr_idx, mask = _neighbor_index_table(neighbors)
     v = vertices.astype(np.float64)
+    if nbr_idx.shape[1] == 0:
+        return v
     for _ in range(iterations):
-        new_v = v.copy()
-        for i, idx in enumerate(neighbors):
-            if not idx:
-                continue
-            new_v[i] = v[i] + lam * (v[idx].mean(axis=0) - v[i])
-        v = new_v
+        gathered = v[nbr_idx]  # (n, max_deg, 3)
+        gathered = np.where(mask[..., None], gathered, 0.0)
+        counts = mask.sum(axis=1, dtype=np.float64)
+        mean_nbr = gathered.sum(axis=1) / np.maximum(counts, 1.0)[:, None]
+        isolated = counts < 1.0
+        mean_nbr[isolated] = v[isolated]
+        v = v + lam * (mean_nbr - v)
     return v.astype(np.float64)
 
 

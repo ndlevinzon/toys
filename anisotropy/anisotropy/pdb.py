@@ -7,7 +7,7 @@ follow Bondi values used in standard SASA models.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -61,15 +61,21 @@ class ProteinStructure:
     atoms: list[Atom]
     pdb_id: str | None = None
     source_path: str | None = None
+    _centers_cache: np.ndarray | None = field(default=None, init=False, repr=False)
+    _vdw_cache: np.ndarray | None = field(default=None, init=False, repr=False)
 
     @property
     def centers(self) -> np.ndarray:
         """(N, 3) coordinates."""
-        return np.stack([a.xyz for a in self.atoms], axis=0)
+        if self._centers_cache is None:
+            self._centers_cache = np.stack([a.xyz for a in self.atoms], axis=0)
+        return self._centers_cache
 
     @property
     def vdw_radii(self) -> np.ndarray:
-        return np.array([a.vdw_radius for a in self.atoms], dtype=np.float64)
+        if self._vdw_cache is None:
+            self._vdw_cache = np.array([a.vdw_radius for a in self.atoms], dtype=np.float64)
+        return self._vdw_cache
 
     @property
     def n_atoms(self) -> int:

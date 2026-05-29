@@ -72,12 +72,8 @@ def shape_anisotropy_from_mesh(
     centered = verts - center
 
     # Gyration tensor S = <r r^T>
-    gyration = np.zeros((3, 3), dtype=np.float64)
-    for i in range(3):
-        for j in range(i, 3):
-            val = float((weights * centered[:, i] * centered[:, j]).sum())
-            gyration[i, j] = val
-            gyration[j, i] = val
+    wc = centered * weights[:, None]
+    gyration = wc.T @ centered
 
     evals, evecs = np.linalg.eigh(gyration)
     order = np.argsort(evals)[::-1]
