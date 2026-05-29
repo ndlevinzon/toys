@@ -1,4 +1,4 @@
-#!binbash
+#!/bin/bash
 #SBATCH --job-name=aniso-orient
 #SBATCH --output=slurm/ising-%j.out
 #SBATCH --error=slurm/ising-%j.err
