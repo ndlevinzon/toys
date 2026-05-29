@@ -18,6 +18,7 @@ import numpy as np
 from scipy.spatial import cKDTree
 
 from anisotropy.ff19sb import Ff19sbChargeAssignment, assign_ff19sb_charges, default_ff19sb_library
+from anisotropy.curvature import vertex_curvatures
 from anisotropy.mesh import ProteinMesh
 from anisotropy.pdb import Atom, ProteinStructure, load_pdb
 from anisotropy.propka_pka import (
@@ -30,6 +31,7 @@ from anisotropy.propka_pka import (
 from anisotropy.residue_chemistry import (
     POLAR_RESIDUES,
     hbond_donors_acceptors,
+    residue_charge_at_ph,
     residue_hydropathy,
 )
 
@@ -116,24 +118,23 @@ class PatchParameterization:
         Compact table (n_patches, 14): area, H, K, q, phi, pKa, h, p, b, |mu|, u
         plus normal (3) and centroid (3) stored separately in npz export.
         """
-        rows = []
-        for p in self.patches:
-            rows.append(
-                [
-                    p.area,
-                    p.mean_curvature,
-                    p.gaussian_curvature,
-                    p.charge,
-                    p.potential,
-                    p.pka_acid,
-                    p.hydropathy,
-                    p.polar_density,
-                    p.hbond_score,
-                    float(np.linalg.norm(p.dipole)),
-                    p.softness,
-                ]
-            )
-        return np.asarray(rows, dtype=np.float64)
+        n = self.n_patches
+        if n == 0:
+            return np.zeros((0, 11), dtype=np.float64)
+        out = np.empty((n, 11), dtype=np.float64)
+        for i, p in enumerate(self.patches):
+            out[i, 0] = p.area
+            out[i, 1] = p.mean_curvature
+            out[i, 2] = p.gaussian_curvature
+            out[i, 3] = p.charge
+            out[i, 4] = p.potential
+            out[i, 5] = p.pka_acid
+            out[i, 6] = p.hydropathy
+            out[i, 7] = p.polar_density
+            out[i, 8] = p.hbond_score
+            out[i, 9] = float(np.linalg.norm(p.dipole))
+            out[i, 10] = p.softness
+        return out
 
 
 def _face_geometry(
@@ -155,22 +156,41 @@ def _face_geometry(
 
 def _build_face_adjacency(faces: np.ndarray) -> list[list[int]]:
     """Two faces adjacent if they share an edge."""
-    edge_to_faces: dict[tuple[int, int], list[int]] = {}
-    n_faces = faces.shape[0]
-    for fi in range(n_faces):
-        tri = faces[fi]
-        for a, b in ((tri[0], tri[1]), (tri[1], tri[2]), (tri[0], tri[2])):
-            edge = (min(a, b), max(a, b))
-            edge_to_faces.setdefault(edge, []).append(fi)
-    adj: list[set[int]] = [set() for _ in range(n_faces)]
-    for face_list in edge_to_faces.values():
-        if len(face_list) < 2:
+    n_faces = int(faces.shape[0])
+    if n_faces == 0:
+        return []
+    f = np.asarray(faces, dtype=np.int64)
+    v0, v1, v2 = f[:, 0], f[:, 1], f[:, 2]
+    face_id = np.arange(n_faces, dtype=np.int64)
+    e_a = np.concatenate([v0, v1, v0])
+    e_b = np.concatenate([v1, v2, v2])
+    fid = np.concatenate([face_id, face_id, face_id])
+    lo = np.minimum(e_a, e_b)
+    hi = np.maximum(e_a, e_b)
+    max_v = int(hi.max()) + 1
+    keys = lo.astype(np.int64) * max_v + hi.astype(np.int64)
+    order = np.argsort(keys, kind="mergesort")
+    keys_s = keys[order]
+    fid_s = fid[order]
+    adj: list[list[int]] = [[] for _ in range(n_faces)]
+    breaks = np.concatenate(
+        [[0], np.flatnonzero(keys_s[1:] != keys_s[:-1]) + 1, [keys_s.size]]
+    )
+    for b in range(int(breaks.size) - 1):
+        s, e = int(breaks[b]), int(breaks[b + 1])
+        group = fid_s[s:e]
+        if group.size < 2:
             continue
-        for i in face_list:
-            for j in face_list:
-                if i != j:
-                    adj[i].add(j)
-    return [sorted(s) for s in adj]
+        for i in group:
+            ii = int(i)
+            for j in group:
+                jj = int(j)
+                if jj != ii:
+                    adj[ii].append(jj)
+    for i in range(n_faces):
+        if adj[i]:
+            adj[i] = sorted(set(adj[i]))
+    return adj
 
 
 def segment_mesh_patches(
@@ -198,6 +218,7 @@ def segment_mesh_patches(
         if face_patch[seed] >= 0:
             continue
         stack = [int(seed)]
+        patch_faces: list[int] = [int(seed)]
         face_patch[seed] = patch_id
         patch_area = float(areas[seed])
         seed_n = normals[seed]
@@ -211,43 +232,31 @@ def segment_mesh_patches(
                     continue
                 face_patch[nb] = patch_id
                 patch_area += float(areas[nb])
+                patch_faces.append(int(nb))
                 stack.append(nb)
 
         if patch_area < min_patch_area and patch_id > 0:
             # Merge small patch into largest neighbor patch.
             neighbors: set[int] = set()
-            for f in np.where(face_patch == patch_id)[0]:
+            for f in patch_faces:
                 for nb in adj[f]:
-                    if face_patch[nb] != patch_id and face_patch[nb] >= 0:
-                        neighbors.add(int(face_patch[nb]))
+                    nb_pid = int(face_patch[nb])
+                    if nb_pid != patch_id and nb_pid >= 0:
+                        neighbors.add(nb_pid)
             if neighbors:
-                target = max(neighbors, key=lambda pid: (face_patch == pid).sum())
+                target = max(neighbors, key=lambda pid: int(np.sum(face_patch == pid)))
                 face_patch[face_patch == patch_id] = target
             else:
                 patch_id += 1
                 continue
         patch_id += 1
 
-    # Renumber contiguously.
-    unique = np.unique(face_patch[face_patch >= 0])
-    remap = {old: new for new, old in enumerate(unique)}
-    for i in range(face_patch.shape[0]):
-        if face_patch[i] >= 0:
-            face_patch[i] = remap[int(face_patch[i])]
-    return face_patch
+    return np.unique(face_patch, return_inverse=True)[1].astype(np.int32)
 
 
 def _vertex_curvatures(mesh: ProteinMesh) -> tuple[np.ndarray, np.ndarray]:
-    """Per-vertex mean and Gaussian curvature via PyVista/VTK."""
-    surface = mesh.to_pyvista()
-    surface = surface.compute_normals(inplace=False)
-    try:
-        mean_h = np.asarray(surface.curvature(curv_type="mean"))
-        gauss_k = np.asarray(surface.curvature(curv_type="gaussian"))
-    except Exception:
-        mean_h = np.zeros(surface.n_points)
-        gauss_k = np.zeros(surface.n_points)
-    return mean_h, gauss_k
+    """Per-vertex mean and Gaussian curvature (PyVista if available, else discrete)."""
+    return vertex_curvatures(mesh.vertices, mesh.faces)
 
 
 def _assign_atoms_to_patches(
@@ -256,21 +265,79 @@ def _assign_atoms_to_patches(
     faces: np.ndarray,
     face_patch_ids: np.ndarray,
     face_centroids: np.ndarray,
-) -> list[list[int]]:
-    """For each patch, list indices of atoms whose closest face centroid belongs to that patch."""
+) -> list[np.ndarray]:
+    """For each patch, atom indices whose closest face centroid belongs to that patch."""
     n_patches = int(face_patch_ids.max()) + 1
     tree = cKDTree(face_centroids)
     _, nearest_face = tree.query(structure.centers, k=1)
-    patch_atoms: list[list[int]] = [[] for _ in range(n_patches)]
-    for ai, face_i in enumerate(nearest_face):
-        pid = int(face_patch_ids[int(face_i)])
-        patch_atoms[pid].append(ai)
+    atom_patch = face_patch_ids[np.asarray(nearest_face, dtype=np.int64)]
+    patch_atoms: list[np.ndarray] = []
+    atom_ids = np.arange(structure.n_atoms, dtype=np.int64)
+    for pid in range(n_patches):
+        patch_atoms.append(atom_ids[atom_patch == pid])
     return patch_atoms
+
+
+def _group_faces_by_patch(
+    face_patch_ids: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Sorted face indices and slice boundaries per contiguous patch id."""
+    order = np.argsort(face_patch_ids, kind="mergesort")
+    sorted_pids = face_patch_ids[order]
+    unique_pids, starts, counts = np.unique(
+        sorted_pids, return_index=True, return_counts=True
+    )
+    ends = starts + counts
+    return unique_pids.astype(np.int32), order, ends
+
+
+def _atom_property_arrays(
+    structure: ProteinStructure,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Per-atom hydropathy, polar mask, H-bond donor/acceptor counts (one pass)."""
+    n = structure.n_atoms
+    hydro = np.empty(n, dtype=np.float64)
+    polar = np.zeros(n, dtype=bool)
+    donors = np.zeros(n, dtype=np.int32)
+    acceptors = np.zeros(n, dtype=np.int32)
+    for i, atom in enumerate(structure.atoms):
+        res = atom.resname.upper()
+        hydro[i] = residue_hydropathy(res)
+        polar[i] = res in POLAR_RESIDUES
+        d, a = hbond_donors_acceptors(res)
+        donors[i] = d
+        acceptors[i] = a
+    return hydro, polar, donors, acceptors
+
+
+def _precompute_atom_charges(
+    structure: ProteinStructure,
+    ph: float,
+    *,
+    pka_lookup: PropkaPkaLookup | None,
+    res_atom_counts: dict[tuple[str, int, str], int],
+) -> np.ndarray:
+    """Residue-aware per-atom charges (same rules as :func:`atom_charge_at_ph`)."""
+    charges = np.zeros(structure.n_atoms, dtype=np.float64)
+    res_q: dict[tuple[str, int, str], float] = {}
+    for i, atom in enumerate(structure.atoms):
+        key = residue_key(atom)
+        if key not in res_q:
+            if pka_lookup is not None:
+                q_res = pka_lookup.residue_charge(atom, ph)
+                if q_res is None:
+                    q_res = residue_charge_at_ph(atom.resname, ph)
+            else:
+                q_res = residue_charge_at_ph(atom.resname, ph)
+            res_q[key] = float(q_res)
+        n_in_res = max(res_atom_counts.get(key, 1), 1)
+        charges[i] = res_q[key] / n_in_res
+    return charges
 
 
 def _aggregate_patch(
     patch_id: int,
-    face_mask: np.ndarray,
+    face_idx: np.ndarray,
     vertices: np.ndarray,
     faces: np.ndarray,
     face_areas: np.ndarray,
@@ -278,7 +345,7 @@ def _aggregate_patch(
     face_centroids: np.ndarray,
     mean_h_vert: np.ndarray,
     gauss_k_vert: np.ndarray,
-    atom_indices: list[int],
+    atom_indices: np.ndarray,
     structure: ProteinStructure,
     *,
     ph: float,
@@ -286,17 +353,22 @@ def _aggregate_patch(
     pka_lookup: PropkaPkaLookup | None = None,
     res_atom_counts: dict[tuple[str, int, str], int] | None = None,
     atom_charges: np.ndarray | None = None,
+    atom_hydro: np.ndarray | None = None,
+    atom_polar: np.ndarray | None = None,
+    atom_donors: np.ndarray | None = None,
+    atom_acceptors: np.ndarray | None = None,
+    centers: np.ndarray | None = None,
 ) -> PatchFeatures:
-    tri = faces[face_mask]
-    areas = face_areas[face_mask]
+    tri = faces[face_idx]
+    areas = face_areas[face_idx]
     a_f = float(areas.sum())
     if a_f < 1e-12:
         a_f = 1e-12
 
     # Area-weighted centroid and normal.
     w = areas / areas.sum()
-    r_f = (w[:, None] * face_centroids[face_mask]).sum(axis=0)
-    n_raw = (w[:, None] * face_normals[face_mask]).sum(axis=0)
+    r_f = (w[:, None] * face_centroids[face_idx]).sum(axis=0)
+    n_raw = (w[:, None] * face_normals[face_idx]).sum(axis=0)
     n_norm = np.linalg.norm(n_raw)
     n_hat = n_raw / (n_norm + 1e-12)
 
@@ -305,62 +377,89 @@ def _aggregate_patch(
     H_f = float(np.mean(mean_h_vert[vert_ids]))
     K_f = float(np.mean(gauss_k_vert[vert_ids]))
 
-    # Chemistry from assigned atoms.
-    q_f = 0.0
-    phi_f = 0.0
-    pka_vals: list[float] = []
-    hydro_vals: list[float] = []
-    polar_count = 0
-    donors = 0
-    acceptors = 0
-    mu = np.zeros(3, dtype=np.float64)
-    b_sum = 0.0
-    n_atoms = len(atom_indices)
-    seen_residue: set[tuple[str, int, str]] = set()
+    ai = np.asarray(atom_indices, dtype=np.int64)
+    n_atoms = int(ai.size)
+    if centers is None:
+        centers = structure.centers
 
-    for ai in atom_indices:
-        atom = structure.atoms[ai]
+    if n_atoms == 0:
+        q_f = 0.0
+        phi_f = 0.0
+        pka_a = 7.0
+        h_f = 0.0
+        p_f = 0.0
+        b_f = 0.0
+        mu = np.zeros(3, dtype=np.float64)
+        u_f = float(min(1.0, abs(H_f) * 2.0 + 0.3))
+    else:
         if atom_charges is not None:
-            q_atom = float(atom_charges[ai])
+            q_atoms = atom_charges[ai]
         else:
-            q_atom = atom_charge_at_ph(
-                atom,
-                ph,
-                pka_lookup=pka_lookup,
-                residue_atom_counts=res_atom_counts,
+            assert res_atom_counts is not None
+            q_atoms = np.array(
+                [
+                    atom_charge_at_ph(
+                        structure.atoms[int(i)],
+                        ph,
+                        pka_lookup=pka_lookup,
+                        residue_atom_counts=res_atom_counts,
+                    )
+                    for i in ai
+                ],
+                dtype=np.float64,
             )
-        q_f += q_atom
-        dist = max(float(np.linalg.norm(atom.xyz - r_f)), 1.0)
-        phi_f += COULOMB_SCALE * q_atom / dist
-        rkey = residue_key(atom)
-        if rkey not in seen_residue:
-            seen_residue.add(rkey)
+        q_f = float(q_atoms.sum())
+        xyz = centers[ai]
+        dist = np.linalg.norm(xyz - r_f, axis=1)
+        phi_f = float((COULOMB_SCALE * q_atoms / np.maximum(dist, 1.0)).sum())
+        mu = (q_atoms[:, None] * (xyz - r_f)).sum(axis=0)
+
+        if atom_hydro is not None:
+            hydro_vals = atom_hydro[ai]
+        else:
+            hydro_vals = np.array(
+                [residue_hydropathy(structure.atoms[int(i)].resname) for i in ai],
+                dtype=np.float64,
+            )
+        if atom_polar is not None:
+            polar_count = int(atom_polar[ai].sum())
+        else:
+            polar_count = sum(
+                1 for i in ai if structure.atoms[int(i)].resname in POLAR_RESIDUES
+            )
+        if atom_donors is not None and atom_acceptors is not None:
+            donors = int(atom_donors[ai].sum())
+            acceptors = int(atom_acceptors[ai].sum())
+        else:
+            donors = 0
+            acceptors = 0
+            for i in ai:
+                d, a = hbond_donors_acceptors(structure.atoms[int(i)].resname)
+                donors += d
+                acceptors += a
+
+        pka_vals: list[float] = []
+        seen: set[tuple[str, int, str]] = set()
+        for i in ai:
+            atom = structure.atoms[int(i)]
+            rkey = residue_key(atom)
+            if rkey in seen:
+                continue
+            seen.add(rkey)
             pka = pka_for_patch_atom(atom, pka_lookup=pka_lookup)
             if pka is not None:
                 pka_vals.append(pka)
-        hp = residue_hydropathy(atom.resname)
-        hydro_vals.append(hp)
-        if atom.resname in POLAR_RESIDUES:
-            polar_count += 1
-        d, a = hbond_donors_acceptors(atom.resname)
-        donors += d
-        acceptors += a
-        mu += q_atom * (atom.xyz - r_f)
+
+        pka_a = float(np.mean(pka_vals)) if pka_vals else 7.0
+        h_scalar = float(np.mean(hydro_vals)) if hydro_vals.size else 0.0
+        h_f = h_scalar * float(np.linalg.norm(n_hat))
+        p_f = float(polar_count) / n_atoms
+        b_f = float(donors + acceptors) / n_atoms
+
         if atom_bfactor is not None:
-            b_sum += float(atom_bfactor[ai])
-
-    pka_a = float(np.mean(pka_vals)) if pka_vals else 7.0
-    h_scalar = float(np.mean(hydro_vals)) if hydro_vals else 0.0
-    # Directional hydropathy: hydrophobic character projected along outward normal.
-    # Positive => hydrophobic face pointing outward (favorable for AWI in simple models).
-    h_f = h_scalar * float(np.linalg.norm(n_hat))
-    p_f = float(polar_count) / max(n_atoms, 1)
-    b_f = float(donors + acceptors) / max(n_atoms, 1)
-
-    if atom_bfactor is not None and n_atoms > 0:
-        u_f = float(b_sum / n_atoms) / 100.0
-    else:
-        u_f = float(min(1.0, abs(H_f) * 2.0 + (1.0 - min(p_f, 1.0)) * 0.3))
+            u_f = float(atom_bfactor[ai].sum() / n_atoms) / 100.0
+        else:
+            u_f = float(min(1.0, abs(H_f) * 2.0 + (1.0 - min(p_f, 1.0)) * 0.3))
 
     return PatchFeatures(
         patch_id=patch_id,
@@ -377,7 +476,7 @@ def _aggregate_patch(
         hbond_score=b_f,
         dipole=mu,
         softness=u_f,
-        face_indices=np.where(face_mask)[0],
+        face_indices=face_idx,
         n_atoms=n_atoms,
     )
 
@@ -447,8 +546,11 @@ def parameterize_mesh(
     if charge_model == "ff19sb":
         lib = default_ff19sb_library(ff19sb_lib)
         path = pdb_path or structure.source_path
-        if path is not None:
+        has_h = any(a.element == "H" for a in structure.atoms)
+        if path is not None and not has_h:
             chem_structure = load_pdb(path, include_hydrogen=True)
+        elif has_h:
+            chem_structure = structure
         if (
             atom_bfactor is not None
             and chem_structure is not structure
@@ -473,6 +575,19 @@ def parameterize_mesh(
     # "table" uses tabulated residue pKa only
 
     res_atom_counts = residue_atom_counts(chem_structure)
+    if atom_charges is None and charge_model != "ff19sb":
+        atom_charges = _precompute_atom_charges(
+            chem_structure,
+            ph,
+            pka_lookup=pka_lookup,
+            res_atom_counts=res_atom_counts,
+        )
+
+    atom_hydro, atom_polar, atom_donors, atom_acceptors = _atom_property_arrays(
+        chem_structure
+    )
+    atom_centers = chem_structure.centers
+
     face_patch_ids = segment_mesh_patches(
         mesh,
         normal_angle_deg=normal_angle_deg,
@@ -485,13 +600,17 @@ def parameterize_mesh(
         chem_structure, mesh.vertices, mesh.faces, face_patch_ids, face_centroids
     )
 
+    unique_pids, face_order, patch_ends = _group_faces_by_patch(face_patch_ids)
     patches: list[PatchFeatures] = []
-    for pid in range(n_patches):
-        mask = face_patch_ids == pid
+    start = 0
+    for out_i, pid in enumerate(unique_pids):
+        end = int(patch_ends[out_i])
+        face_idx = face_order[start:end]
+        start = end
         patches.append(
             _aggregate_patch(
-                pid,
-                mask,
+                int(pid),
+                face_idx,
                 mesh.vertices,
                 mesh.faces,
                 face_areas,
@@ -499,13 +618,18 @@ def parameterize_mesh(
                 face_centroids,
                 mean_h,
                 gauss_k,
-                patch_atoms[pid],
+                patch_atoms[int(pid)],
                 chem_structure,
                 ph=ph,
                 atom_bfactor=patch_bfactor,
                 pka_lookup=pka_lookup,
                 res_atom_counts=res_atom_counts,
                 atom_charges=atom_charges,
+                atom_hydro=atom_hydro,
+                atom_polar=atom_polar,
+                atom_donors=atom_donors,
+                atom_acceptors=atom_acceptors,
+                centers=atom_centers,
             )
         )
 
@@ -541,30 +665,46 @@ def parameterize_mesh(
 
 def load_mesh_ply(path: str) -> ProteinMesh:
     """Minimal PLY loader for meshes written by ``ProteinMesh.save_ply``."""
-    verts: list[list[float]] = []
-    faces: list[list[int]] = []
-    mode = None
+    path = str(path)
     with open(path, encoding="utf-8") as handle:
-        for line in handle:
-            line = line.strip()
-            if line.startswith("element vertex"):
-                mode = "v"
-                continue
-            if line.startswith("element face"):
-                mode = "f"
-                continue
-            if line == "end_header":
-                mode = "data"
-                continue
-            if mode == "data":
-                parts = line.split()
-                if len(parts) == 3:
-                    verts.append([float(x) for x in parts])
-                elif len(parts) == 4 and parts[0] == "3":
-                    faces.append([int(parts[1]), int(parts[2]), int(parts[3])])
+        lines = [ln.strip() for ln in handle]
+
+    n_verts = 0
+    n_faces = 0
+    data_start = 0
+    for i, line in enumerate(lines):
+        if line.startswith("element vertex"):
+            n_verts = int(line.split()[-1])
+        elif line.startswith("element face"):
+            n_faces = int(line.split()[-1])
+        elif line == "end_header":
+            data_start = i + 1
+            break
+
+    body = lines[data_start : data_start + n_verts + n_faces]
+    vert_lines = body[:n_verts]
+    face_lines = body[n_verts : n_verts + n_faces]
+
+    if n_verts:
+        verts = np.fromstring(
+            " ".join(vert_lines), sep=" ", dtype=np.float64
+        ).reshape(n_verts, 3)
+    else:
+        verts = np.zeros((0, 3), dtype=np.float64)
+
+    if n_faces:
+        face_data = np.fromstring(
+            " ".join(face_lines), sep=" ", dtype=np.int64
+        ).reshape(n_faces, 4)
+        if not np.all(face_data[:, 0] == 3):
+            raise ValueError(f"Expected triangular faces in {path}")
+        faces = face_data[:, 1:4]
+    else:
+        faces = np.zeros((0, 3), dtype=np.int64)
+
     return ProteinMesh(
-        vertices=np.asarray(verts, dtype=np.float64),
-        faces=np.asarray(faces, dtype=np.int64),
+        vertices=verts,
+        faces=faces,
         resolution_angstrom=0.0,
         probe_radius=1.4,
     )

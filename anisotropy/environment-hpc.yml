@@ -1,5 +1,5 @@
 # Slurm / headless clusters — same as environment.yml but without PyVista/VTK.
-# Use with orientation_sample.py --no-render.
+# orientation_sample.py --no-render; parameterize_mesh.py uses discrete curvatures.
 #
 #   conda env create -f environment-hpc.yml
 #   conda activate anisotropy-hpc

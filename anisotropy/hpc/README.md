@@ -45,9 +45,9 @@ cd $HOME/toys/anisotropy
 conda env create -f environment.yml
 conda activate anisotropy
 
-# Compute nodes (--no-render): headless env
-# conda env create -f environment-hpc.yml
-# conda activate anisotropy-hpc
+# Compute nodes (--no-render): headless env (no PyVista; parameterize_mesh OK)
+conda env create -f environment-hpc.yml
+conda activate anisotropy-hpc
 ```
 
 See [../CONDA.md](../CONDA.md). After `git pull`: `conda env update -f environment-hpc.yml --prune && pip install -e . --no-deps`
@@ -82,7 +82,7 @@ rsync -avz anisotropy/9yp6.{pdb,ply} USER@cluster:~/scratch/toys_runs/9yp6/
 | Step | Where | Command |
 |------|--------|---------|
 | 1. Mesh (if needed) | login / short job | `fit_protein_mesh.py` |
-| 2. Parameterize | login or 1–2 h job | `parameterize_mesh.py` (PROPKA) |
+| 2. Parameterize | login or 1–2 h job | `parameterize_mesh.py` (works in `anisotropy-hpc`, no PyVista) |
 | 3. Orientation sampling | **compute node** | `orientation_sample.py` (hours) |
 
 For step 3, use **`--no-render`** and match **`--parallel-workers`** to Slurm CPUs.

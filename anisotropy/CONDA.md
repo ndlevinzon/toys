@@ -39,7 +39,7 @@ conda env create -f environment-hpc.yml
 conda activate anisotropy-hpc
 ```
 
-Use `--no-render` on `orientation_sample.py`. See [hpc/README.md](hpc/README.md).
+Use `--no-render` on `orientation_sample.py`. **`parameterize_mesh.py` runs without PyVista** (discrete cotangent / angle-deficit curvatures). For VTK-identical curvatures on a laptop, use `environment.yml`. See [hpc/README.md](hpc/README.md).
 
 ## Update after `git pull`
 
@@ -71,7 +71,8 @@ conda env remove -n anisotropy
 | `conda: command not found` | Install Miniconda/Miniforge; restart shell |
 | Slow solve | `conda install -n base conda-libmamba-solver` then `conda config --set solver libmamba` |
 | `pip install -e .` fails | Run `conda activate` first; `cd` to `anisotropy/` |
-| VTK / PyVista errors on HPC | Use `environment-hpc.yml` and `--no-render` |
+| VTK / PyVista errors on HPC | Use `environment-hpc.yml` and `--no-render`; parameterize needs no PyVista |
+| `No module named pyvista` on parameterize | `git pull` + `pip install -e .` (discrete curvature fallback) or use full `environment.yml` |
 | PROPKA not found | `conda install -c conda-forge propka` or recreate env |
 
 ## Relation to `requirements.txt`

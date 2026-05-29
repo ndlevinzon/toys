@@ -12,6 +12,7 @@ not bundled here; chain termini use the interior residue templates with a warnin
 
 from __future__ import annotations
 
+import functools
 import re
 import warnings
 from collections import defaultdict
@@ -216,9 +217,14 @@ class Ff19sbChargeAssignment:
         return float(self.charges.sum())
 
 
+@functools.lru_cache(maxsize=8)
+def _cached_ff19sb_library(path_str: str) -> Ff19sbLibrary:
+    return Ff19sbLibrary.from_amino_lib(path_str)
+
+
 def default_ff19sb_library(lib_path: str | Path | None = None) -> Ff19sbLibrary:
     path = Path(lib_path) if lib_path is not None else DEFAULT_AMINO19_LIB
-    return Ff19sbLibrary.from_amino_lib(path)
+    return _cached_ff19sb_library(str(path.resolve()))
 
 
 def _residue_atoms(
