@@ -1,0 +1,63 @@
+#!binbash
+#SBATCH --job-name=aniso-orient
+#SBATCH --output=slurm/ising-%j.out
+#SBATCH --error=slurm/ising-%j.err
+#SBATCH --cpus-per-task=16
+#SBATCH --mem=32G
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --partition=granite 
+#SBATCH --qos=granite
+#SBATCH --account=cheatham 
+#SBATCH -o slurm-%j.out-%N
+#SBATCH -e slurm-%j.err-%N                 # separate stderr is helpful
+
+set -euo pipefail
+set -x
+
+# --- explicit paths (edit these) ---
+REPO=/scratch/rai/vast1/u1116818/anisotropy/toys/anisotropy
+RUN_DIR=/scratch/rai/vast1/u1116818/anisotropy/toys/anisotropy
+OUT_DIR=${RUN_DIR}/runs/orient_${SLURM_JOB_ID}
+
+PDB=${RUN_DIR}/9yp6.pdb
+MESH=${RUN_DIR}/9yp6.ply
+ISING_PARAMS=${REPO}/hpc/ising_params.hpc.yaml
+
+CONDA_ENV=/uufs/chpc.utah.edu/common/home/u1116818/.conda/envs/anisotropy-hpc
+
+# --- environment ---
+module purge
+module load miniconda3/23.11.0
+source "$(conda info --base)/etc/profile.d/conda.sh"
+conda activate "${CONDA_ENV}"
+
+export OMP_NUM_THREADS=1
+export MKL_NUM_THREADS=1
+export OPENBLAS_NUM_THREADS=1
+export NUMEXPR_NUM_THREADS=1
+
+CPUS="${SLURM_CPUS_PER_TASK:-16}"
+
+mkdir -p "${REPO}/slurm" "${OUT_DIR}"
+cd "${REPO}"
+
+echo "Job ${SLURM_JOB_ID} on $(hostname) at $(date)"
+echo "REPO=${REPO}"
+echo "RUN_DIR=${RUN_DIR}"
+echo "OUT_DIR=${OUT_DIR}"
+echo "PDB=${PDB} MESH=${MESH}"
+echo "ISING_PARAMS=${ISING_PARAMS}"
+echo "CPUS=${CPUS}"
+
+python orientation_sample.py \
+  "${PDB}" "${MESH}" \
+  --ising-params "${ISING_PARAMS}" \
+  --outdir "${OUT_DIR}" \
+  --no-render \
+  --parallel-workers "${CPUS}" \
+  --pka-source table \
+  --verbose-console
+
+echo "Done at $(date)"
+echo "Outputs in ${OUT_DIR}"
