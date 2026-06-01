@@ -46,6 +46,18 @@ else
 fi
 
 conda activate "$ENV_NAME"
+
+# env update sometimes skips newly listed packages on old envs — install explicitly.
+conda install -n "$ENV_NAME" -y -c conda-forge \
+  "scikit-image>=0.22" \
+  "numpy>=1.26" \
+  "scipy>=1.11" \
+  "propka>=3.5"
+
+if [[ "$ENV_FILE" == *viz* ]] || grep -q '^[[:space:]]*- pyvista' "$ENV_FILE" 2>/dev/null; then
+  conda install -n "$ENV_NAME" -y -c conda-forge "pyvista>=0.43" vtk
+fi
+
 pip install -e . --no-deps
 
 python - <<'PY'

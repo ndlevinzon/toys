@@ -22,13 +22,19 @@ PDB=${RUN_DIR}/9yp6.pdb
 MESH=${RUN_DIR}/9yp6.ply
 ISING_PARAMS=${REPO}/hpc/ising_params.hpc.yaml
 
-CONDA_ENV=/uufs/chpc.utah.edu/common/home/u1116818/.conda/envs/anisotropy-hpc
+# Conda env *name* (not a path). Must match ``name:`` in environment-hpc.yml.
+CONDA_ENV=anisotropy-hpc
 
 # --- environment ---
 module purge
 module load miniforge3/25.11.0
 source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate "${CONDA_ENV}"
+
+# Fail fast if Slurm is not using the env sync_env maintains.
+echo "PYTHON=$(which python)"
+python -c "import sys; print('prefix', sys.prefix)"
+python -c "import skimage; print('scikit-image', skimage.__version__)"
 
 export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1

@@ -1,14 +1,13 @@
-# Headless HPC + PyVista/VTK (reference renders, slow voxel debug, VTK curvatures).
-# Same as environment-hpc.yml but keeps visualization deps in the YAML so
-# ``conda env update`` does not drop them when you avoid manual installs.
+# Slurm / headless clusters — no PyVista/VTK (use --no-render on orientation_sample).
+# parameterize_mesh.py uses discrete curvatures without PyVista.
 #
-#   conda env create -f environment-hpc-viz.yml
+#   conda env create -f environment-hpc.yml
 #   conda activate anisotropy-hpc
 #
 # After git pull:
-#   bash hpc/sync_env.sh   # with ANISOTROPY_ENV_FILE=environment-hpc-viz.yml
+#   bash hpc/sync_env.sh
 
-name: anisotropy-hpc-viz
+name: anisotropy-hpc
 channels:
   - conda-forge
 dependencies:
@@ -20,8 +19,6 @@ dependencies:
   - pyyaml>=6
   - tqdm>=4.66
   - propka>=3.5
-  - pyvista>=0.43
-  - vtk
   - pip
   - pip:
       - -e .
