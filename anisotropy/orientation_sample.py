@@ -37,9 +37,12 @@ from anisotropy.lattice_solvent_hamiltonian import (
 from anisotropy.orientation_diagnostics import (
     calibrate_beta_auto,
     inplane_rotation_degrees,
+    native_to_plot_angles,
+    rotation_for_viewing_angles,
     save_orientation_distribution_plots,
     summarize_orientation_sampling,
     viewing_angles_degrees,
+    viewing_angles_radians,
     write_orientation_sampling_report,
 )
 from anisotropy.fast_orientation_eval import FastOrientationEvaluator
@@ -830,6 +833,30 @@ def main_impl(args: argparse.Namespace, run: RunSession) -> None:
     orient_paths = save_orientation_distribution_plots(
         args.outdir, Rs, weights, mcmc_mask=refined_mask
     )
+    r_ref = rotation_for_viewing_angles(0.0, 0.0, 0.0)
+    orient_paths["reference_view"] = args.outdir / "reference_view_az0_el0.png"
+    az_ref, el_ref = viewing_angles_radians(r_ref)
+    ref_path = args.outdir / "reference_view_az0_el0.png"
+    render_system_snapshot(
+        args.outdir,
+        mesh,
+        r_ref,
+        t_base,
+        slab_thickness,
+        filename=ref_path.name,
+    )
+    ref_az_plot, ref_el_plot = native_to_plot_angles(
+        np.array([az_ref]), np.array([el_ref])
+    )
+    run.log(
+        f"Reference pose native (az={az_ref:.4f}, el={el_ref:.4f}) rad; "
+        f"on plots (0..π axes) at ({ref_az_plot[0]:.4f}, {ref_el_plot[0]:.4f}); "
+        "lab +Z viewing ≈ particle +X"
+    )
+    if ref_path.is_file():
+        run.log(f"  wrote: {ref_path.resolve()}")
+    else:
+        run.log("  reference render skipped (PyVista not available)")
     sampling_summary = summarize_orientation_sampling(
         energies, weights, Rs, beta=beta
     )
@@ -956,7 +983,8 @@ def main_impl(args: argparse.Namespace, run: RunSession) -> None:
         report_path,
         *orient_paths.values(),
     ]:
-        run.log(f"  wrote: {str(path.resolve())}")
+        if path is not None:
+            run.log(f"  wrote: {str(path.resolve())}")
     if not args.no_render:
         run.log(f"  wrote: {str((args.outdir / 'system_view.png').resolve())}")
     run.log(f"OUTDIR: {args.outdir.resolve()}")

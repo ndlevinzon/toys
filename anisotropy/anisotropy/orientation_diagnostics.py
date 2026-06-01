@@ -7,8 +7,16 @@ Beam propagates along **-Z** (electrons toward the detector at +Z).
 For each particle rotation ``R`` (maps particle → lab), the viewing axis in the
 particle frame is ``d = R^T @ [0, 0, 1]`` (unit vector). Spherical angles:
 
-* **Azimuth** — ``atan2(d_y, d_x)`` in degrees, range ``(-180, 180]``
-* **Elevation** — ``arcsin(d_z)`` in degrees above the lab XY plane, range ``[-90, 90]``
+* **Azimuth** — ``atan2(d_y, d_x)`` in radians (native range ``(-π, π]``)
+* **Elevation** — ``arcsin(d_z)`` in radians (native range ``[-π/2, π/2]``)
+
+**Distribution plots** map both axes to ``[0, π]`` with π tick marks (0, π/4, π/2, 3π/4, π):
+
+    az_plot = min(az mod 2π, 2π − az mod 2π)
+    el_plot = elevation + π/2
+
+Native ``(az, el) = (0, 0)`` appears at ``(0, π/2)`` on the heatmap. A reference render
+at native zero uses :func:`rotation_for_viewing_angles`.
 
 **In-plane rotation** (spin about the viewing axis) is a third Euler degree of freedom;
 it changes the 3D render but not ``(azimuth, elevation)``.
@@ -28,6 +36,19 @@ import numpy as np
 
 # Fixed cryo-EM beam / micrograph axis (matches orientation_sample slab +Z).
 VIEW_DIRECTION_LAB = np.array([0.0, 0.0, 1.0], dtype=np.float64)
+
+# Plot axes for azimuth–elevation maps: both in [0, π] with the same π tick set.
+PI_PLOT_TICKS: tuple[float, ...] = (
+    0.0,
+    np.pi / 4.0,
+    np.pi / 2.0,
+    3.0 * np.pi / 4.0,
+    np.pi,
+)
+PLOT_ANGLE_LIM = (0.0, np.pi)
+# Native angle ranges (JSON, reports, reference rotation).
+AZIMUTH_NATIVE_LIM = (-np.pi, np.pi)
+ELEVATION_NATIVE_LIM = (-np.pi / 2.0, np.pi / 2.0)
 
 
 def unit_vectors(rows: np.ndarray) -> np.ndarray:
@@ -79,6 +100,14 @@ def inplane_rotation_degrees(rotation: np.ndarray) -> float:
     return float(np.degrees(np.arctan2(np.dot(e_x_particle, v), np.dot(e_x_particle, u))))
 
 
+def viewing_angles_radians(rotation: np.ndarray) -> tuple[float, float]:
+    """Return (azimuth, elevation) in radians for one rotation matrix."""
+    d = viewing_direction_particle_frame(rotation)
+    azimuth = float(np.arctan2(d[1], d[0]))
+    elevation = float(np.arcsin(np.clip(d[2], -1.0, 1.0)))
+    return azimuth, elevation
+
+
 def viewing_angles_from_rotations(rotations: list[np.ndarray]) -> tuple[np.ndarray, np.ndarray]:
     """Batch (azimuth, elevation) in degrees, shape (N,)."""
     az = np.empty(len(rotations), dtype=np.float64)
@@ -86,6 +115,120 @@ def viewing_angles_from_rotations(rotations: list[np.ndarray]) -> tuple[np.ndarr
     for i, R in enumerate(rotations):
         az[i], el[i] = viewing_angles_degrees(R)
     return az, el
+
+
+def viewing_angles_rad_from_rotations(
+    rotations: list[np.ndarray],
+) -> tuple[np.ndarray, np.ndarray]:
+    """Batch (azimuth, elevation) in radians, shape (N,)."""
+    az = np.empty(len(rotations), dtype=np.float64)
+    el = np.empty(len(rotations), dtype=np.float64)
+    for i, R in enumerate(rotations):
+        az[i], el[i] = viewing_angles_radians(R)
+    return az, el
+
+
+def native_to_plot_angles(
+    azimuth_rad: np.ndarray,
+    elevation_rad: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Map native viewing angles to plot coordinates on ``[0, π] × [0, π]``.
+
+    Azimuth is folded into ``[0, π]``; elevation uses ``arcsin(d_z) + π/2``.
+    """
+    az = np.asarray(azimuth_rad, dtype=np.float64).reshape(-1)
+    el = np.asarray(elevation_rad, dtype=np.float64).reshape(-1)
+    az_full = np.mod(az, 2.0 * np.pi)
+    az_plot = np.minimum(az_full, 2.0 * np.pi - az_full)
+    el_plot = np.clip(el + 0.5 * np.pi, *PLOT_ANGLE_LIM)
+    return az_plot, el_plot
+
+
+def viewing_angles_plot_from_rotations(
+    rotations: list[np.ndarray],
+) -> tuple[np.ndarray, np.ndarray]:
+    """Batch (azimuth_plot, elevation_plot) in ``[0, π]``, shape (N,)."""
+    az, el = viewing_angles_rad_from_rotations(rotations)
+    return native_to_plot_angles(az, el)
+
+
+def reference_marker_plot_coords() -> tuple[float, float]:
+    """Heatmap coordinates for native ``azimuth = elevation = 0``."""
+    az_plot, el_plot = native_to_plot_angles(
+        np.array([0.0], dtype=np.float64),
+        np.array([0.0], dtype=np.float64),
+    )
+    return float(az_plot[0]), float(el_plot[0])
+
+
+def _rotation_axis(angle: float, axis: str) -> np.ndarray:
+    """Right-handed rotation matrix for ``axis`` in ``{x,y,z}``."""
+    c, s = float(np.cos(angle)), float(np.sin(angle))
+    if axis == "x":
+        return np.array([[1.0, 0.0, 0.0], [0.0, c, -s], [0.0, s, c]], dtype=np.float64)
+    if axis == "y":
+        return np.array([[c, 0.0, s], [0.0, 1.0, 0.0], [-s, 0.0, c]], dtype=np.float64)
+    if axis == "z":
+        return np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]], dtype=np.float64)
+    raise ValueError("axis must be x, y, or z")
+
+
+def rotation_for_viewing_angles(
+    azimuth_rad: float = 0.0,
+    elevation_rad: float = 0.0,
+    inplane_rad: float = 0.0,
+) -> np.ndarray:
+    """
+    Build ``R`` with ``viewing_angles_radians(R) ≈ (azimuth_rad, elevation_rad)``.
+
+    Default ``(0, 0)`` places the lab +Z viewing axis along particle +X (reference pose).
+    In-plane spin is applied about the viewing axis after azimuth/elevation.
+    """
+    az = float(azimuth_rad)
+    el = float(elevation_rad)
+    ip = float(inplane_rad)
+    # Reference: particle +x → lab +z  (viewing direction [1,0,0] in particle frame).
+    r_ref = np.array(
+        [[0.0, 0.0, 1.0], [0.0, 1.0, 0.0], [-1.0, 0.0, 0.0]],
+        dtype=np.float64,
+    )
+    r_view = _rotation_axis(az, "z") @ _rotation_axis(el, "y") @ _rotation_axis(ip, "x")
+    return (r_ref @ r_view).astype(np.float64)
+
+
+def _format_pi_tick(value: float, _pos: float) -> str:
+    """Matplotlib tick formatter: multiples of π."""
+    if abs(value) < 1e-12:
+        return "0"
+    ratio = value / np.pi
+    for num, den, label in (
+        (1, 4, "π/4"),
+        (1, 2, "π/2"),
+        (3, 4, "3π/4"),
+        (1, 1, "π"),
+    ):
+        if abs(abs(ratio) - num / den) < 1e-6:
+            return f"-{label}" if ratio < 0 else label
+    return f"{ratio:.2f}π"
+
+
+def _configure_az_el_axes_radians(ax, *, set_x: bool = True, set_y: bool = True) -> None:
+    """Both axes on ``[0, π]`` with ticks 0, π/4, π/2, 3π/4, π."""
+    from matplotlib.ticker import FixedLocator, FuncFormatter
+
+    fmt = FuncFormatter(_format_pi_tick)
+    ticks = list(PI_PLOT_TICKS)
+    if set_x:
+        ax.set_xlim(*PLOT_ANGLE_LIM)
+        ax.xaxis.set_major_locator(FixedLocator(ticks))
+        ax.xaxis.set_major_formatter(fmt)
+        ax.set_xlabel("azimuth (rad, 0 to π)")
+    if set_y:
+        ax.set_ylim(*PLOT_ANGLE_LIM)
+        ax.yaxis.set_major_locator(FixedLocator(ticks))
+        ax.yaxis.set_major_formatter(fmt)
+        ax.set_ylabel("elevation (rad, arcsin + π/2)")
 
 
 def inplane_angles_from_rotations(rotations: list[np.ndarray]) -> np.ndarray:
@@ -256,7 +399,8 @@ def summarize_orientation_sampling(
     """Diagnostics explaining sparse heatmaps vs varied 3D renders."""
     w = _normalize_weights(weights)
     E = np.asarray(energies, dtype=np.float64)
-    az, el = viewing_angles_from_rotations(rotations)
+    az_native, el_native = viewing_angles_rad_from_rotations(rotations)
+    az, el = native_to_plot_angles(az_native, el_native)
     inplane = inplane_angles_from_rotations(rotations)
     dirs = directions_from_rotations(rotations)
 
@@ -264,8 +408,8 @@ def summarize_orientation_sampling(
     gaps = np.sort(E) - Emin
     w_sorted = np.sort(w)[::-1]
 
-    az_edges = np.linspace(-180.0, 180.0, n_azimuth_bins + 1)
-    el_edges = np.linspace(-90.0, 90.0, n_elevation_bins + 1)
+    az_edges = np.linspace(PLOT_ANGLE_LIM[0], PLOT_ANGLE_LIM[1], n_azimuth_bins + 1)
+    el_edges = np.linspace(PLOT_ANGLE_LIM[0], PLOT_ANGLE_LIM[1], n_elevation_bins + 1)
     H, _, _ = np.histogram2d(az, el, bins=[az_edges, el_edges], weights=w)
     H_unw, _, _ = np.histogram2d(az, el, bins=[az_edges, el_edges])
     occupied_weighted = int(np.count_nonzero(H > 0))
@@ -410,31 +554,27 @@ def write_orientation_sampling_report(
 
 
 def _histogram_az_el(
-    azimuth_deg: np.ndarray,
-    elevation_deg: np.ndarray,
+    azimuth_rad: np.ndarray,
+    elevation_rad: np.ndarray,
     weights: np.ndarray | None,
     *,
     n_azimuth_bins: int,
     n_elevation_bins: int,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    az_edges = np.linspace(-180.0, 180.0, n_azimuth_bins + 1)
-    el_edges = np.linspace(-90.0, 90.0, n_elevation_bins + 1)
+    az_plot, el_plot = native_to_plot_angles(azimuth_rad, elevation_rad)
+    az_edges = np.linspace(PLOT_ANGLE_LIM[0], PLOT_ANGLE_LIM[1], n_azimuth_bins + 1)
+    el_edges = np.linspace(PLOT_ANGLE_LIM[0], PLOT_ANGLE_LIM[1], n_elevation_bins + 1)
     if weights is None:
-        w = np.ones(len(azimuth_deg), dtype=np.float64) / max(len(azimuth_deg), 1)
+        w = np.ones(len(az_plot), dtype=np.float64) / max(len(az_plot), 1)
     else:
         w = _normalize_weights(weights)
-    H, _, _ = np.histogram2d(
-        np.asarray(azimuth_deg, dtype=np.float64),
-        np.asarray(elevation_deg, dtype=np.float64),
-        bins=[az_edges, el_edges],
-        weights=w,
-    )
+    H, _, _ = np.histogram2d(az_plot, el_plot, bins=[az_edges, el_edges], weights=w)
     return H.T, az_edges, el_edges
 
 
 def plot_viewing_direction_distribution(
-    azimuth_deg: np.ndarray,
-    elevation_deg: np.ndarray,
+    azimuth_rad: np.ndarray,
+    elevation_rad: np.ndarray,
     weights: np.ndarray,
     outpath: str | Path,
     *,
@@ -444,7 +584,7 @@ def plot_viewing_direction_distribution(
     log_floor: float = 1e-4,
 ) -> None:
     """
-    2D map: x = azimuth, y = elevation.
+    2D map: x = azimuth, y = elevation (radians).
 
     Left: log10 weighted density (shows low-probability tails).
     Right: scatter of all samples (size ∝ weight) — raw SO(3) exploration on S².
@@ -452,11 +592,15 @@ def plot_viewing_direction_distribution(
     import matplotlib.pyplot as plt
 
     w = _normalize_weights(weights)
-    az = np.asarray(azimuth_deg, dtype=np.float64)
-    el = np.asarray(elevation_deg, dtype=np.float64)
+    az_plot, el_plot = native_to_plot_angles(azimuth_rad, elevation_rad)
+    ref_az, ref_el = reference_marker_plot_coords()
 
     H, az_edges, el_edges = _histogram_az_el(
-        az, el, weights, n_azimuth_bins=n_azimuth_bins, n_elevation_bins=n_elevation_bins
+        azimuth_rad,
+        elevation_rad,
+        weights,
+        n_azimuth_bins=n_azimuth_bins,
+        n_elevation_bins=n_elevation_bins,
     )
     peak = float(H.max())
     H_log = np.log10(H + peak * log_floor) if peak > 0 else H
@@ -465,20 +609,28 @@ def plot_viewing_direction_distribution(
 
     pcm = axes[0].pcolormesh(az_edges, el_edges, H_log, cmap=cmap, shading="flat")
     fig.colorbar(pcm, ax=axes[0], label="log10 probability (+ floor)")
-    axes[0].set_xlabel("azimuth (deg)")
-    axes[0].set_ylabel("elevation (deg)")
+    _configure_az_el_axes_radians(axes[0])
     axes[0].set_title("Weighted distribution (log scale)")
-    axes[0].set_xlim(-180, 180)
-    axes[0].set_ylim(-90, 90)
 
     sizes = 8.0 + 120.0 * (w / (w.max() + 1e-30))
-    sc = axes[1].scatter(az, el, c=np.log10(w + 1e-30), s=sizes, cmap=cmap, alpha=0.65, edgecolors="none")
+    sc = axes[1].scatter(
+        az_plot, el_plot, c=np.log10(w + 1e-30), s=sizes, cmap=cmap, alpha=0.65, edgecolors="none"
+    )
     fig.colorbar(sc, ax=axes[1], label="log10 weight")
-    axes[1].set_xlabel("azimuth (deg)")
-    axes[1].set_ylabel("elevation (deg)")
+    _configure_az_el_axes_radians(axes[1])
+    axes[1].scatter(
+        [ref_az],
+        [ref_el],
+        marker="*",
+        s=220,
+        c="red",
+        edgecolors="white",
+        linewidths=0.6,
+        zorder=5,
+        label="native az=0, el=0",
+    )
+    axes[1].legend(loc="upper right", fontsize=8)
     axes[1].set_title("All samples (marker size ∝ weight)")
-    axes[1].set_xlim(-180, 180)
-    axes[1].set_ylim(-90, 90)
     axes[1].grid(True, alpha=0.25)
 
     fig.suptitle("Viewing direction distribution (cryo-EM axis in particle frame)", y=1.02)
@@ -488,8 +640,8 @@ def plot_viewing_direction_distribution(
 
 
 def plot_viewing_direction_uniform(
-    azimuth_deg: np.ndarray,
-    elevation_deg: np.ndarray,
+    azimuth_rad: np.ndarray,
+    elevation_rad: np.ndarray,
     outpath: str | Path,
     *,
     n_azimuth_bins: int = 36,
@@ -499,21 +651,21 @@ def plot_viewing_direction_uniform(
     """Unweighted histogram — density of random SO(3) draws on S² (should be ~flat)."""
     import matplotlib.pyplot as plt
 
-    az = np.asarray(azimuth_deg, dtype=np.float64)
-    el = np.asarray(elevation_deg, dtype=np.float64)
+    az_plot, el_plot = native_to_plot_angles(azimuth_rad, elevation_rad)
     H, az_edges, el_edges = _histogram_az_el(
-        az, el, None, n_azimuth_bins=n_azimuth_bins, n_elevation_bins=n_elevation_bins
+        azimuth_rad,
+        elevation_rad,
+        None,
+        n_azimuth_bins=n_azimuth_bins,
+        n_elevation_bins=n_elevation_bins,
     )
 
     fig, ax = plt.subplots(figsize=(9, 5))
     pcm = ax.pcolormesh(az_edges, el_edges, H, cmap=cmap, shading="flat")
     fig.colorbar(pcm, ax=ax, label="fraction of samples")
-    ax.scatter(az, el, s=6, c="white", alpha=0.35, edgecolors="none")
-    ax.set_xlabel("azimuth (deg)")
-    ax.set_ylabel("elevation (deg)")
+    ax.scatter(az_plot, el_plot, s=6, c="white", alpha=0.35, edgecolors="none")
+    _configure_az_el_axes_radians(ax)
     ax.set_title("Uniform SO(3) sample density (unweighted; not Boltzmann)")
-    ax.set_xlim(-180, 180)
-    ax.set_ylim(-90, 90)
     fig.tight_layout()
     fig.savefig(outpath, dpi=200)
     plt.close(fig)
@@ -662,8 +814,8 @@ def plot_orientation_probability_sphere(
 
 
 def plot_viewing_direction_smoothed(
-    azimuth_deg: np.ndarray,
-    elevation_deg: np.ndarray,
+    azimuth_rad: np.ndarray,
+    elevation_rad: np.ndarray,
     weights: np.ndarray,
     outpath: str | Path,
     *,
@@ -677,8 +829,8 @@ def plot_viewing_direction_smoothed(
 
     w = _normalize_weights(weights)
     H, az_edges, el_edges = _histogram_az_el(
-        azimuth_deg,
-        elevation_deg,
+        azimuth_rad,
+        elevation_rad,
         weights,
         n_azimuth_bins=n_azimuth_bins,
         n_elevation_bins=n_elevation_bins,
@@ -697,11 +849,19 @@ def plot_viewing_direction_smoothed(
     fig, ax = plt.subplots(figsize=(10, 5))
     pcm = ax.pcolormesh(az_edges, el_edges, H, cmap=cmap, shading="flat")
     fig.colorbar(pcm, ax=ax, label="probability density")
-    ax.set_xlabel("azimuth (deg)")
-    ax.set_ylabel("elevation (deg)")
+    _configure_az_el_axes_radians(ax)
+    ref_az, ref_el = reference_marker_plot_coords()
+    ax.scatter(
+        [ref_az],
+        [ref_el],
+        marker="*",
+        s=200,
+        c="red",
+        edgecolors="white",
+        linewidths=0.6,
+        zorder=5,
+    )
     ax.set_title("Viewing direction distribution (smoothed)")
-    ax.set_xlim(-180, 180)
-    ax.set_ylim(-90, 90)
     fig.tight_layout()
     fig.savefig(outpath, dpi=220)
     plt.close(fig)
@@ -717,7 +877,7 @@ def save_orientation_distribution_plots(
 ) -> dict[str, Path]:
     """Write orientation distribution figures; return output paths."""
     outdir = Path(outdir)
-    az, el = viewing_angles_from_rotations(rotations)
+    az_native, el_native = viewing_angles_rad_from_rotations(rotations)
     inplane = inplane_angles_from_rotations(rotations)
 
     paths = {
@@ -727,9 +887,11 @@ def save_orientation_distribution_plots(
         "inplane": outdir / f"{prefix}_inplane_rotation.png",
         "sphere": outdir / f"{prefix}_orientation_probability_sphere.png",
     }
-    plot_viewing_direction_distribution(az, el, weights, paths["viewing_weighted"])
-    plot_viewing_direction_smoothed(az, el, weights, paths["viewing_smoothed"])
-    plot_viewing_direction_uniform(az, el, paths["viewing_uniform"])
+    plot_viewing_direction_distribution(
+        az_native, el_native, weights, paths["viewing_weighted"]
+    )
+    plot_viewing_direction_smoothed(az_native, el_native, weights, paths["viewing_smoothed"])
+    plot_viewing_direction_uniform(az_native, el_native, paths["viewing_uniform"])
     plot_inplane_rotation_distribution(inplane, weights, paths["inplane"])
     plot_orientation_probability_sphere(rotations, weights, paths["sphere"])
 
@@ -740,8 +902,8 @@ def save_orientation_distribution_plots(
         }
         w_mcmc = np.asarray(weights, dtype=np.float64)[mcmc_mask]
         Rs_mcmc = [R for R, keep in zip(rotations, mcmc_mask) if keep]
-        az_m = az[mcmc_mask]
-        el_m = el[mcmc_mask]
+        az_m = az_native[mcmc_mask]
+        el_m = el_native[mcmc_mask]
         plot_viewing_direction_smoothed(az_m, el_m, w_mcmc, mcmc_paths["viewing_mcmc"])
         plot_orientation_probability_sphere(Rs_mcmc, w_mcmc, mcmc_paths["sphere_mcmc"])
         paths.update(mcmc_paths)

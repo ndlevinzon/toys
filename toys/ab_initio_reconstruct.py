@@ -17,6 +17,8 @@ Important
   explain, which drives wrong orientations and ring-like artifacts.
 * More particles help, but orientation **search density** and **iterations**
   matter as much as count. Use ``--quality`` for large stacks.
+* Enforce **point-group symmetry** on the map each iteration (``--symmetry c4v``
+  for the default square pyramid: apex +Z, 4-fold + vertical mirrors).
 
 Output: ``reconstruction_ab_initio.npz`` — view with ``view_reconstruction.py``.
 """
@@ -24,8 +26,10 @@ Output: ``reconstruction_ab_initio.npz`` — view with ``view_reconstruction.py`
 from __future__ import annotations
 
 import argparse
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TypeAlias
 
 import numpy as np
 from scipy import ndimage
@@ -40,6 +44,152 @@ from beam_projection_toy import (
 from classify_2d import cross_correlate_shift, load_particle_stack, preprocess_particle, rotate_image
 
 DEFAULT_BEAM = np.array([0.0, 0.0, -1.0], dtype=np.float64)
+
+VolumeOp: TypeAlias = Callable[[np.ndarray], np.ndarray]
+
+# Volume array axes are (Z, Y, X); index 0 is +Z (pyramid apex in the default phantom).
+SYMMETRY_AXIS_NAMES = ("z", "y", "x")
+SYMMETRY_CHOICES = ("none", "c2", "c3", "c4", "c4v", "pyramid")
+
+
+@dataclass(frozen=True)
+class SymmetryEnforcement:
+    """Point-group symmetrization applied to the 3D map each refinement step."""
+
+    name: str
+    axis: int
+    operations: tuple[VolumeOp, ...]
+
+    def symmetrize(self, volume: np.ndarray) -> np.ndarray:
+        acc = np.zeros_like(volume, dtype=np.float64)
+        for op in self.operations:
+            acc += op(volume)
+        return (acc / len(self.operations)).astype(np.float32)
+
+    @property
+    def order(self) -> int:
+        return len(self.operations)
+
+
+def _parse_symmetry_axis(axis: str | int) -> int:
+    if isinstance(axis, int):
+        if axis not in (0, 1, 2):
+            raise ValueError(f"symmetry axis index must be 0, 1, or 2, got {axis}")
+        return axis
+    key = str(axis).strip().lower()
+    if key in SYMMETRY_AXIS_NAMES:
+        return SYMMETRY_AXIS_NAMES.index(key)
+    if key in ("0", "1", "2"):
+        return int(key)
+    raise ValueError(
+        f"Unknown symmetry axis {axis!r}; use z/y/x or 0/1/2 (volume Z, Y, X)."
+    )
+
+
+def _perpendicular_axes(symmetry_axis: int) -> tuple[int, int]:
+    return tuple(i for i in range(3) if i != symmetry_axis)  # type: ignore[return-value]
+
+
+def _rotate_about_axis(volume: np.ndarray, symmetry_axis: int, quarter_turns: int) -> np.ndarray:
+    a0, a1 = _perpendicular_axes(symmetry_axis)
+    return np.rot90(volume, k=quarter_turns % 4, axes=(a0, a1))
+
+
+def _flip_along_axis(volume: np.ndarray, axis: int) -> np.ndarray:
+    return np.flip(volume, axis=axis)
+
+
+def _compose_ops(*ops: VolumeOp) -> VolumeOp:
+    def composed(volume: np.ndarray) -> np.ndarray:
+        out = volume
+        for op in reversed(ops):
+            out = op(out)
+        return out
+
+    return composed
+
+
+def build_symmetry_enforcement(name: str, *, axis: int = 0) -> SymmetryEnforcement | None:
+    """
+    Build symmetry operators for the reconstruction volume (Z, Y, X).
+
+    ``c4v`` / ``pyramid``: square pyramid with apex along ``axis`` (default Z).
+    Cyclic groups ``c2``, ``c3``, ``c4`` average over rotations only.
+    """
+    key = name.strip().lower()
+    if key in ("none", "off", ""):
+        return None
+    if key == "pyramid":
+        key = "c4v"
+    if key not in SYMMETRY_CHOICES:
+        raise ValueError(
+            f"Unknown symmetry {name!r}; choose from {', '.join(SYMMETRY_CHOICES)}."
+        )
+
+    a0, a1 = _perpendicular_axes(axis)
+    rot = lambda v, k=1: _rotate_about_axis(v, axis, k)  # noqa: E731
+    # Mirror through a plane containing the symmetry axis (flip the second perp axis).
+    sigma = lambda v, flip_axis=a1: _flip_along_axis(v, flip_axis)  # noqa: E731
+
+    if key == "c2":
+        ops = (
+            lambda v: v,
+            lambda v: rot(v, 2),
+        )
+    elif key == "c3":
+        # 120° steps via three 90° rotations is wrong — use scipy or explicit permute.
+        # Approximate C3 with 120° using ndimage.rotate on the perpendicular plane.
+        def rot120(v: np.ndarray) -> np.ndarray:
+            return ndimage.rotate(
+                v,
+                angle=120,
+                axes=(a0, a1),
+                reshape=False,
+                order=1,
+                mode="constant",
+                cval=0.0,
+            ).astype(np.float32)
+
+        def rot240(v: np.ndarray) -> np.ndarray:
+            return ndimage.rotate(
+                v,
+                angle=240,
+                axes=(a0, a1),
+                reshape=False,
+                order=1,
+                mode="constant",
+                cval=0.0,
+            ).astype(np.float32)
+
+        ops = (lambda v: v, rot120, rot240)
+    elif key == "c4":
+        ops = (
+            lambda v: v,
+            lambda v: rot(v, 1),
+            lambda v: rot(v, 2),
+            lambda v: rot(v, 3),
+        )
+    elif key == "c4v":
+        ops = (
+            lambda v: v,
+            lambda v: rot(v, 1),
+            lambda v: rot(v, 2),
+            lambda v: rot(v, 3),
+            sigma,
+            _compose_ops(sigma, lambda v: rot(v, 1)),
+            _compose_ops(sigma, lambda v: rot(v, 2)),
+            _compose_ops(sigma, lambda v: rot(v, 3)),
+        )
+    else:
+        return None
+
+    return SymmetryEnforcement(name=key, axis=axis, operations=ops)
+
+
+def symmetrize_volume(volume: np.ndarray, symmetry: SymmetryEnforcement | None) -> np.ndarray:
+    if symmetry is None:
+        return volume
+    return symmetry.symmetrize(volume)
 
 
 @dataclass
@@ -217,6 +367,7 @@ def make_initial_volume(
     shape: tuple[int, int, int],
     rng: np.random.Generator,
     particles: np.ndarray | None = None,
+    symmetry: SymmetryEnforcement | None = None,
 ) -> np.ndarray:
     nz, ny, nx = shape
     cz, cy, cx = (nz - 1) / 2.0, (ny - 1) / 2.0, (nx - 1) / 2.0
@@ -232,6 +383,7 @@ def make_initial_volume(
     blob *= spherical_support_mask(shape, radius_frac=0.44)
     blob += 0.01 * rng.standard_normal(blob.shape).astype(np.float32)
     blob = np.clip(blob, 0.0, None)
+    blob = symmetrize_volume(blob, symmetry)
     return prepare_volume_for_projection(blob)
 
 
@@ -340,11 +492,13 @@ def postprocess_volume(
     mask: np.ndarray,
     *,
     sigma_vox: float = 0.6,
+    symmetry: SymmetryEnforcement | None = None,
 ) -> np.ndarray:
     vol = np.clip(volume.astype(np.float32), 0.0, None) * mask
     if sigma_vox > 0:
         vol = ndimage.gaussian_filter(vol, sigma=sigma_vox)
     vol *= mask
+    vol = symmetrize_volume(vol, symmetry)
     return prepare_volume_for_projection(vol)
 
 
@@ -427,6 +581,7 @@ def ab_initio_reconstruct(
     use_ramp_filter: bool = True,
     seed: int = 0,
     gt_orientations: Rotation | None = None,
+    symmetry: SymmetryEnforcement | None = None,
     progress: bool = True,
 ) -> ReconstructionResult:
     n_particles, h, w = particles.shape
@@ -435,7 +590,7 @@ def ab_initio_reconstruct(
 
     rng = np.random.default_rng(seed)
     mask = spherical_support_mask(volume_shape, radius_frac=0.44)
-    volume = make_initial_volume(volume_shape, rng, particles) * mask
+    volume = make_initial_volume(volume_shape, rng, particles, symmetry) * mask
 
     particles_match = np.stack(
         [downsample_image(p, match_downsample) for p in particles],
@@ -494,7 +649,7 @@ def ab_initio_reconstruct(
             weight_sum += w
 
         volume = (acc / max(weight_sum, 1e-8)).astype(np.float32)
-        volume = postprocess_volume(volume, mask)
+        volume = postprocess_volume(volume, mask, symmetry=symmetry)
 
         for _ in range(sirt_steps):
             residual_acc = np.zeros(volume_shape, dtype=np.float64)
@@ -516,6 +671,7 @@ def ab_initio_reconstruct(
                 volume + 0.35 * residual_acc / max(n_particles, 1),
                 mask,
                 sigma_vox=0.4,
+                symmetry=symmetry,
             )
 
         scores = np.array([m.score for m in metadata], dtype=np.float32)
@@ -536,19 +692,28 @@ def ab_initio_reconstruct(
     )
 
 
-def save_reconstruction(result: ReconstructionResult, path: Path) -> None:
+def save_reconstruction(
+    result: ReconstructionResult,
+    path: Path,
+    *,
+    symmetry: SymmetryEnforcement | None = None,
+) -> None:
     """Write volume, orientation matrices, and scores to .npz."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(
-        path,
-        volume=result.volume.astype(np.float32),
-        orientation_matrices=result.orientations.as_matrix().astype(np.float32),
-        scores=result.scores.astype(np.float32),
-        n_iterations=np.int32(result.n_iterations),
-        source_particles=np.array(result.source_particles),
-        beam_direction_xyz=DEFAULT_BEAM.astype(np.float32),
-    )
+    payload: dict[str, np.ndarray] = {
+        "volume": result.volume.astype(np.float32),
+        "orientation_matrices": result.orientations.as_matrix().astype(np.float32),
+        "scores": result.scores.astype(np.float32),
+        "n_iterations": np.int32(result.n_iterations),
+        "source_particles": np.array(result.source_particles),
+        "beam_direction_xyz": DEFAULT_BEAM.astype(np.float32),
+    }
+    if symmetry is not None:
+        payload["symmetry"] = np.array(symmetry.name)
+        payload["symmetry_axis"] = np.int32(symmetry.axis)
+        payload["symmetry_order"] = np.int32(symmetry.order)
+    np.savez_compressed(path, **payload)
     print(f"Wrote {path}  (volume shape {result.volume.shape})")
 
 
@@ -562,7 +727,8 @@ def parse_args() -> argparse.Namespace:
             "  1. Rebuild with geometric_projections: generate_projection_dataset.py\n"
             "  2. Run: ab_initio_reconstruct.py --dataset projection_dataset.npz --quality\n"
             "  3. Do NOT use 2D class alignments (default is --center-only)\n"
-            "  4. Diagnostic upper bound: --use-gt-orientations"
+            "  4. Diagnostic upper bound: --use-gt-orientations\n"
+            "  5. Square pyramid symmetry: --symmetry c4v  (or --symmetry pyramid)"
         ),
     )
     parser.add_argument("--classification", type=Path, default=Path("classification_2d.npz"))
@@ -610,6 +776,21 @@ def parse_args() -> argparse.Namespace:
         help="Quick low-resolution run (not for final maps)",
     )
     parser.add_argument("--quiet", action="store_true")
+    parser.add_argument(
+        "--symmetry",
+        default="none",
+        choices=SYMMETRY_CHOICES,
+        help=(
+            "Enforce point-group symmetry on the map each iteration. "
+            "'c4v' or 'pyramid': square pyramid (apex +Z, 4-fold + mirrors). "
+            "Also: c2, c3, c4."
+        ),
+    )
+    parser.add_argument(
+        "--symmetry-axis",
+        default="z",
+        help="Symmetry rotation axis in volume Z,Y,X frame (default: z = apex for pyramid phantom).",
+    )
     return parser.parse_args()
 
 
@@ -665,11 +846,22 @@ def main() -> None:
             raise KeyError("No 'rotations' array in dataset")
         print("  Using ground-truth orientations (diagnostic only)")
 
+    symmetry = build_symmetry_enforcement(
+        args.symmetry,
+        axis=_parse_symmetry_axis(args.symmetry_axis),
+    )
+
     print(
         f"Ab initio: {len(particles)} particles, volume {shape}, "
         f"{iterations} iterations, match downsample x{match_ds}"
     )
     print(f"  source: {source}")
+    if symmetry is not None:
+        axis_name = SYMMETRY_AXIS_NAMES[symmetry.axis]
+        print(
+            f"  symmetry: {symmetry.name} (order {symmetry.order}), "
+            f"axis {axis_name} (volume index {symmetry.axis})"
+        )
 
     result = ab_initio_reconstruct(
         particles,
@@ -685,10 +877,11 @@ def main() -> None:
         use_ramp_filter=not args.no_ramp,
         seed=args.seed,
         gt_orientations=gt,
+        symmetry=symmetry,
         progress=not args.quiet,
     )
     result.source_particles = source
-    save_reconstruction(result, args.output)
+    save_reconstruction(result, args.output, symmetry=symmetry)
     print("Done. View with:  python view_reconstruction.py", args.output)
     print("       Movie:  python render_reconstruction_rotation.py", args.output)
 
