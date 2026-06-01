@@ -31,9 +31,13 @@ module load miniforge3/25.11.0
 source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate "${CONDA_ENV}"
 
+export PIP_USER=0
+export PYTHONNOUSERSITE=1
+
 # Fail fast if Slurm is not using the env sync_env maintains.
+echo "CONDA_PREFIX=${CONDA_PREFIX:-unset}"
 echo "PYTHON=$(which python)"
-python -c "import sys; print('prefix', sys.prefix)"
+python -c "import sys; print('executable', sys.executable); print('prefix', sys.prefix)"
 python -c "import skimage; print('scikit-image', skimage.__version__)"
 
 export OMP_NUM_THREADS=1

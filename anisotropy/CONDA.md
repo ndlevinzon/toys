@@ -69,6 +69,28 @@ ANISOTROPY_ENV_FILE=environment-hpc.yml ANISOTROPY_CONDA_ENV=anisotropy-hpc bash
 
 Conda package names: **`scikit-image`** (import `skimage`), **`pyvista`**. There is no conda package named `skimage`.
 
+### CHPC: `Defaulting to user installation` / `No module named skimage`
+
+This means `pip` installed into `~/.local` instead of the conda env (often because `module load miniforge3` was not run before `sync_env.sh`, so `conda activate` did not stick).
+
+```bash
+module load miniforge3/25.11.0
+source "$(conda info --base)/etc/profile.d/conda.sh"
+conda activate anisotropy-hpc
+
+# Remove broken user-local installs (safe if you only use conda envs)
+python -m pip uninstall -y anisotropy 2>/dev/null || true
+rm -rf ~/.local/lib/python*/site-packages/anisotropy*
+
+conda install -y -c conda-forge "scikit-image>=0.22"
+export PIP_USER=0 PYTHONNOUSERSITE=1
+python -m pip install -e . --no-deps --no-user
+
+python -c "import skimage; import anisotropy; print('ok', skimage.__version__)"
+```
+
+Then rerun `bash hpc/sync_env.sh` (after `module load`).
+
 Optional: run sync automatically after every pull (once per clone):
 
 ```bash

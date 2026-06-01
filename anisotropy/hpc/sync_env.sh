@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
 # Re-sync the conda env after ``git pull`` without removing extra packages.
 #
+# On CHPC, load the same Miniforge module as your Slurm script first:
+#   module load miniforge3/25.11.0
+#
 # Usage (from repo .../toys/anisotropy):
 #   bash hpc/sync_env.sh
 #
-# Headless only (no PyVista in YAML — use discrete curvatures / --no-render):
+# Headless only (no PyVista):
 #   ANISOTROPY_ENV_FILE=environment-hpc.yml ANISOTROPY_CONDA_ENV=anisotropy-hpc bash hpc/sync_env.sh
 #
-# HPC + PyVista (recommended if you conda-installed pyvista by hand before):
+# HPC + PyVista:
 #   ANISOTROPY_ENV_FILE=environment-hpc-viz.yml ANISOTROPY_CONDA_ENV=anisotropy-hpc-viz bash hpc/sync_env.sh
-#
-# Laptop / full pipeline:
-#   ANISOTROPY_ENV_FILE=environment.yml ANISOTROPY_CONDA_ENV=anisotropy bash hpc/sync_env.sh
 
 set -euo pipefail
 
@@ -35,6 +35,11 @@ if [[ ! -f "$ENV_FILE" ]]; then
   exit 1
 fi
 
+if ! command -v conda >/dev/null 2>&1; then
+  echo "conda not on PATH. On CHPC run first: module load miniforge3/25.11.0" >&2
+  exit 1
+fi
+
 source "$(conda info --base)/etc/profile.d/conda.sh"
 
 if conda env list | awk '{print $1}' | grep -qx "$ENV_NAME"; then
@@ -47,7 +52,21 @@ fi
 
 conda activate "$ENV_NAME"
 
-# env update sometimes skips newly listed packages on old envs — install explicitly.
+if [[ -z "${CONDA_PREFIX:-}" ]]; then
+  echo "conda activate '$ENV_NAME' did not set CONDA_PREFIX — aborting." >&2
+  exit 1
+fi
+
+ENV_PYTHON="${CONDA_PREFIX}/bin/python"
+if [[ ! -x "$ENV_PYTHON" ]]; then
+  echo "Missing $ENV_PYTHON" >&2
+  exit 1
+fi
+
+echo "CONDA_PREFIX=$CONDA_PREFIX"
+echo "PYTHON=$ENV_PYTHON ($("$ENV_PYTHON" --version))"
+
+# Install into the named env (works even if activate is flaky).
 conda install -n "$ENV_NAME" -y -c conda-forge \
   "scikit-image>=0.22" \
   "numpy>=1.26" \
@@ -58,11 +77,29 @@ if [[ "$ENV_FILE" == *viz* ]] || grep -q '^[[:space:]]*- pyvista' "$ENV_FILE" 2>
   conda install -n "$ENV_NAME" -y -c conda-forge "pyvista>=0.43" vtk
 fi
 
-pip install -e . --no-deps
+# Never install into ~/.local when the env site-packages exists.
+export PIP_USER=0
+export PYTHONNOUSERSITE=1
 
-python - <<'PY'
+PIP_LOG="$(mktemp)"
+if ! "$ENV_PYTHON" -m pip install -e . --no-deps --no-user 2>&1 | tee "$PIP_LOG"; then
+  echo "pip install failed" >&2
+  exit 1
+fi
+if grep -q "Defaulting to user installation" "$PIP_LOG"; then
+  echo "ERROR: pip fell back to ~/.local — conda env is not writable or not active." >&2
+  echo "  CONDA_PREFIX=$CONDA_PREFIX" >&2
+  echo "  Fix: module load miniforge3; conda activate $ENV_NAME; rerun sync_env.sh" >&2
+  exit 1
+fi
+rm -f "$PIP_LOG"
+
+"$ENV_PYTHON" - <<'PY'
 import importlib
 import sys
+
+print("sys.executable:", sys.executable)
+print("sys.prefix:", sys.prefix)
 
 checks = ["anisotropy", "numpy", "scipy", "skimage", "propka"]
 for name in checks:
@@ -76,4 +113,5 @@ except ImportError:
     print("  --  pyvista not installed (expected for environment-hpc.yml)")
 PY
 
-echo "Active env: $CONDA_DEFAULT_ENV ($(which python))"
+echo "Done. Slurm should use: conda activate ${ENV_NAME}"
+echo "Verify: ${ENV_PYTHON} -c \"import skimage; print(skimage.__version__)\""
