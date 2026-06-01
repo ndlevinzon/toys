@@ -34,8 +34,13 @@ conda activate "${CONDA_ENV}"
 export PIP_USER=0
 export PYTHONNOUSERSITE=1
 
-# Fail fast if Slurm is not using the env sync_env maintains.
+# Fail fast: never run on the read-only Miniforge module base.
 echo "CONDA_PREFIX=${CONDA_PREFIX:-unset}"
+if [[ "${CONDA_PREFIX:-}" == *"/sys/installdir/"* ]]; then
+  echo "ERROR: conda activate did not switch to personal env ${CONDA_ENV}." >&2
+  echo "Run on login node: module load miniforge3/25.11.0 && bash hpc/sync_env.sh" >&2
+  exit 1
+fi
 echo "PYTHON=$(which python)"
 python -c "import sys; print('executable', sys.executable); print('prefix', sys.prefix)"
 python -c "import skimage; print('scikit-image', skimage.__version__)"

@@ -69,27 +69,36 @@ ANISOTROPY_ENV_FILE=environment-hpc.yml ANISOTROPY_CONDA_ENV=anisotropy-hpc bash
 
 Conda package names: **`scikit-image`** (import `skimage`), **`pyvista`**. There is no conda package named `skimage`.
 
-### CHPC: `Defaulting to user installation` / `No module named skimage`
+### CHPC: read-only Miniforge / `Permission denied` on pip
 
-This means `pip` installed into `~/.local` instead of the conda env (often because `module load miniforge3` was not run before `sync_env.sh`, so `conda activate` did not stick).
+The module `miniforge3` installs under `/uufs/.../sys/installdir/...` — **you cannot `pip install` there**. You need a **personal env** in `~/.conda/envs/anisotropy-hpc`.
 
 ```bash
 module load miniforge3/25.11.0
 source "$(conda info --base)/etc/profile.d/conda.sh"
+conda env list | grep anisotropy
+
+cd /scratch/rai/vast1/u1116818/anisotropy/toys/anisotropy
+bash hpc/sync_env.sh
+
 conda activate anisotropy-hpc
+echo "$CONDA_PREFIX"
+# MUST be: /uufs/chpc.utah.edu/common/home/u1116818/.conda/envs/anisotropy-hpc
+# NOT:     .../sys/installdir/.../miniforge3
 
-# Remove broken user-local installs (safe if you only use conda envs)
-python -m pip uninstall -y anisotropy 2>/dev/null || true
-rm -rf ~/.local/lib/python*/site-packages/anisotropy*
-
-conda install -y -c conda-forge "scikit-image>=0.22"
-export PIP_USER=0 PYTHONNOUSERSITE=1
-python -m pip install -e . --no-deps --no-user
-
-python -c "import skimage; import anisotropy; print('ok', skimage.__version__)"
+~/.conda/envs/anisotropy-hpc/bin/python -c "import skimage, anisotropy; print('ok')"
 ```
 
-Then rerun `bash hpc/sync_env.sh` (after `module load`).
+If `conda env list` shows `anisotropy-hpc` pointing at `sys/installdir`, remove and recreate:
+
+```bash
+conda env remove -n anisotropy-hpc
+conda env create -f environment-hpc.yml
+```
+
+### CHPC: `Defaulting to user installation` / `No module named skimage`
+
+`pip` went to `~/.local` because `conda activate` never left the module base. Fix with `bash hpc/sync_env.sh` after `module load`, then use the env’s Python path as above.
 
 Optional: run sync automatically after every pull (once per clone):
 

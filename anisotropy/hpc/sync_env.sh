@@ -1,17 +1,14 @@
 #!/usr/bin/env bash
 # Re-sync the conda env after ``git pull`` without removing extra packages.
 #
-# On CHPC, load the same Miniforge module as your Slurm script first:
+# CHPC: the Miniforge *module* base is read-only. You need a personal env in
+# ~/.conda/envs/anisotropy-hpc (created by this script). Always:
+#
 #   module load miniforge3/25.11.0
+#   bash hpc/sync_env.sh
 #
 # Usage (from repo .../toys/anisotropy):
 #   bash hpc/sync_env.sh
-#
-# Headless only (no PyVista):
-#   ANISOTROPY_ENV_FILE=environment-hpc.yml ANISOTROPY_CONDA_ENV=anisotropy-hpc bash hpc/sync_env.sh
-#
-# HPC + PyVista:
-#   ANISOTROPY_ENV_FILE=environment-hpc-viz.yml ANISOTROPY_CONDA_ENV=anisotropy-hpc-viz bash hpc/sync_env.sh
 
 set -euo pipefail
 
@@ -41,32 +38,44 @@ if ! command -v conda >/dev/null 2>&1; then
 fi
 
 source "$(conda info --base)/etc/profile.d/conda.sh"
+CONDA_BASE="$(conda info --base)"
 
-if conda env list | awk '{print $1}' | grep -qx "$ENV_NAME"; then
-  echo "Updating conda env '$ENV_NAME' from $ENV_FILE (no --prune)"
-  conda env update -n "$ENV_NAME" -f "$ENV_FILE"
-else
-  echo "Creating conda env '$ENV_NAME' from $ENV_FILE"
+_resolve_env_prefix() {
+  conda env list | awk -v e="$ENV_NAME" '$1==e {print $NF; exit}'
+}
+
+ENV_PREFIX="$(_resolve_env_prefix)"
+if [[ -z "$ENV_PREFIX" ]]; then
+  echo "Creating personal env '$ENV_NAME' (writable under \$HOME/.conda/envs/) ..."
   conda env create -n "$ENV_NAME" -f "$ENV_FILE"
+  ENV_PREFIX="$(_resolve_env_prefix)"
 fi
 
-conda activate "$ENV_NAME"
-
-if [[ -z "${CONDA_PREFIX:-}" ]]; then
-  echo "conda activate '$ENV_NAME' did not set CONDA_PREFIX — aborting." >&2
+if [[ -z "$ENV_PREFIX" || ! -d "$ENV_PREFIX" ]]; then
+  echo "Could not find conda env '$ENV_NAME' after create." >&2
   exit 1
 fi
 
-ENV_PYTHON="${CONDA_PREFIX}/bin/python"
+if [[ "$ENV_PREFIX" == "$CONDA_BASE" ]] || [[ "$ENV_PREFIX" == *"/sys/installdir/"* ]]; then
+  echo "ERROR: env '$ENV_NAME' resolves to the read-only module base:" >&2
+  echo "  $ENV_PREFIX" >&2
+  echo "Remove it and recreate in your home directory:" >&2
+  echo "  conda env remove -n $ENV_NAME" >&2
+  echo "  conda env create -n $ENV_NAME -f $ENV_FILE" >&2
+  exit 1
+fi
+
+ENV_PYTHON="${ENV_PREFIX}/bin/python"
 if [[ ! -x "$ENV_PYTHON" ]]; then
   echo "Missing $ENV_PYTHON" >&2
   exit 1
 fi
 
-echo "CONDA_PREFIX=$CONDA_PREFIX"
-echo "PYTHON=$ENV_PYTHON ($("$ENV_PYTHON" --version))"
+echo "ENV_PREFIX=$ENV_PREFIX"
+echo "CONDA_BASE=$CONDA_BASE (read-only module — do not pip install here)"
 
-# Install into the named env (works even if activate is flaky).
+conda env update -n "$ENV_NAME" -f "$ENV_FILE"
+
 conda install -n "$ENV_NAME" -y -c conda-forge \
   "scikit-image>=0.22" \
   "numpy>=1.26" \
@@ -77,29 +86,19 @@ if [[ "$ENV_FILE" == *viz* ]] || grep -q '^[[:space:]]*- pyvista' "$ENV_FILE" 2>
   conda install -n "$ENV_NAME" -y -c conda-forge "pyvista>=0.43" vtk
 fi
 
-# Never install into ~/.local when the env site-packages exists.
 export PIP_USER=0
 export PYTHONNOUSERSITE=1
 
-PIP_LOG="$(mktemp)"
-if ! "$ENV_PYTHON" -m pip install -e . --no-deps --no-user 2>&1 | tee "$PIP_LOG"; then
-  echo "pip install failed" >&2
-  exit 1
-fi
-if grep -q "Defaulting to user installation" "$PIP_LOG"; then
-  echo "ERROR: pip fell back to ~/.local — conda env is not writable or not active." >&2
-  echo "  CONDA_PREFIX=$CONDA_PREFIX" >&2
-  echo "  Fix: module load miniforge3; conda activate $ENV_NAME; rerun sync_env.sh" >&2
-  exit 1
-fi
-rm -f "$PIP_LOG"
+# Install with the env's Python by full path (never the module base python).
+"$ENV_PYTHON" -m pip install -e . --no-deps --no-user
 
 "$ENV_PYTHON" - <<'PY'
 import importlib
 import sys
 
 print("sys.executable:", sys.executable)
-print("sys.prefix:", sys.prefix)
+if "/sys/installdir/" in sys.executable:
+    raise SystemExit("Still using module base Python — wrong env")
 
 checks = ["anisotropy", "numpy", "scipy", "skimage", "propka"]
 for name in checks:
@@ -113,5 +112,9 @@ except ImportError:
     print("  --  pyvista not installed (expected for environment-hpc.yml)")
 PY
 
-echo "Done. Slurm should use: conda activate ${ENV_NAME}"
-echo "Verify: ${ENV_PYTHON} -c \"import skimage; print(skimage.__version__)\""
+echo ""
+echo "Done. In Slurm and interactive shells:"
+echo "  module load miniforge3/25.11.0"
+echo "  source \"\$(conda info --base)/etc/profile.d/conda.sh\""
+echo "  conda activate ${ENV_NAME}"
+echo "  # CONDA_PREFIX should be: ${ENV_PREFIX}"
