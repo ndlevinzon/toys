@@ -10,13 +10,9 @@ particle frame is ``d = R^T @ [0, 0, 1]`` (unit vector). Spherical angles:
 * **Azimuth** — ``atan2(d_y, d_x)`` in radians (native range ``(-π, π]``)
 * **Elevation** — ``arcsin(d_z)`` in radians (native range ``[-π/2, π/2]``)
 
-**Distribution plots** map both axes to ``[0, π]`` with π tick marks (0, π/4, π/2, 3π/4, π):
-
-    az_plot = min(az mod 2π, 2π − az mod 2π)
-    el_plot = elevation + π/2
-
-Native ``(az, el) = (0, 0)`` appears at ``(0, π/2)`` on the heatmap. A reference render
-at native zero uses :func:`rotation_for_viewing_angles`.
+**Distribution plots** use native ranges: azimuth ``[-π, π]``, elevation ``[-π/2, π/2]``,
+with π/4 tick marks (and 0). Reference pose ``(az, el) = (0, 0)`` uses
+:func:`rotation_for_viewing_angles`.
 
 **In-plane rotation** (spin about the viewing axis) is a third Euler degree of freedom;
 it changes the 3D render but not ``(azimuth, elevation)``.
@@ -37,18 +33,22 @@ import numpy as np
 # Fixed cryo-EM beam / micrograph axis (matches orientation_sample slab +Z).
 VIEW_DIRECTION_LAB = np.array([0.0, 0.0, 1.0], dtype=np.float64)
 
-# Plot axes for azimuth–elevation maps: both in [0, π] with the same π tick set.
-PI_PLOT_TICKS: tuple[float, ...] = (
+# Plot axes: native viewing-angle ranges with π/4 tick spacing.
+AZIMUTH_NATIVE_LIM = (-np.pi, np.pi)
+ELEVATION_NATIVE_LIM = (-np.pi / 2.0, np.pi / 2.0)
+AZIMUTH_PLOT_TICKS: tuple[float, ...] = tuple(
+    -np.pi + k * (np.pi / 4.0) for k in range(9)
+)  # -π … π in steps of π/4
+ELEVATION_PLOT_TICKS: tuple[float, ...] = (
+    -np.pi / 2.0,
+    -np.pi / 4.0,
     0.0,
     np.pi / 4.0,
     np.pi / 2.0,
-    3.0 * np.pi / 4.0,
-    np.pi,
 )
-PLOT_ANGLE_LIM = (0.0, np.pi)
-# Native angle ranges (JSON, reports, reference rotation).
-AZIMUTH_NATIVE_LIM = (-np.pi, np.pi)
-ELEVATION_NATIVE_LIM = (-np.pi / 2.0, np.pi / 2.0)
+# Back-compat aliases
+AZIMUTH_PLOT_LIM = AZIMUTH_NATIVE_LIM
+ELEVATION_PLOT_LIM = ELEVATION_NATIVE_LIM
 
 
 def unit_vectors(rows: np.ndarray) -> np.ndarray:
@@ -132,34 +132,25 @@ def native_to_plot_angles(
     azimuth_rad: np.ndarray,
     elevation_rad: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """
-    Map native viewing angles to plot coordinates on ``[0, π] × [0, π]``.
-
-    Azimuth is folded into ``[0, π]``; elevation uses ``arcsin(d_z) + π/2``.
-    """
+    """Return native ``(azimuth, elevation)`` clipped to plot limits (identity map)."""
     az = np.asarray(azimuth_rad, dtype=np.float64).reshape(-1)
-    el = np.asarray(elevation_rad, dtype=np.float64).reshape(-1)
-    az_full = np.mod(az, 2.0 * np.pi)
-    az_plot = np.minimum(az_full, 2.0 * np.pi - az_full)
-    el_plot = np.clip(el + 0.5 * np.pi, *PLOT_ANGLE_LIM)
-    return az_plot, el_plot
+    el = np.clip(
+        np.asarray(elevation_rad, dtype=np.float64).reshape(-1),
+        *ELEVATION_NATIVE_LIM,
+    )
+    return az, el
 
 
 def viewing_angles_plot_from_rotations(
     rotations: list[np.ndarray],
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Batch (azimuth_plot, elevation_plot) in ``[0, π]``, shape (N,)."""
-    az, el = viewing_angles_rad_from_rotations(rotations)
-    return native_to_plot_angles(az, el)
+    """Batch native ``(azimuth, elevation)`` in radians, shape (N,)."""
+    return viewing_angles_rad_from_rotations(rotations)
 
 
 def reference_marker_plot_coords() -> tuple[float, float]:
-    """Heatmap coordinates for native ``azimuth = elevation = 0``."""
-    az_plot, el_plot = native_to_plot_angles(
-        np.array([0.0], dtype=np.float64),
-        np.array([0.0], dtype=np.float64),
-    )
-    return float(az_plot[0]), float(el_plot[0])
+    """Plot coordinates for native ``azimuth = elevation = 0``."""
+    return 0.0, 0.0
 
 
 def _rotation_axis(angle: float, axis: str) -> np.ndarray:
@@ -214,21 +205,20 @@ def _format_pi_tick(value: float, _pos: float) -> str:
 
 
 def _configure_az_el_axes_radians(ax, *, set_x: bool = True, set_y: bool = True) -> None:
-    """Both axes on ``[0, π]`` with ticks 0, π/4, π/2, 3π/4, π."""
+    """Azimuth ``[-π, π]`` and elevation ``[-π/2, π/2]`` with π/4 tick marks."""
     from matplotlib.ticker import FixedLocator, FuncFormatter
 
     fmt = FuncFormatter(_format_pi_tick)
-    ticks = list(PI_PLOT_TICKS)
     if set_x:
-        ax.set_xlim(*PLOT_ANGLE_LIM)
-        ax.xaxis.set_major_locator(FixedLocator(ticks))
+        ax.set_xlim(*AZIMUTH_NATIVE_LIM)
+        ax.xaxis.set_major_locator(FixedLocator(list(AZIMUTH_PLOT_TICKS)))
         ax.xaxis.set_major_formatter(fmt)
-        ax.set_xlabel("azimuth (rad, 0 to π)")
+        ax.set_xlabel("azimuth (rad)")
     if set_y:
-        ax.set_ylim(*PLOT_ANGLE_LIM)
-        ax.yaxis.set_major_locator(FixedLocator(ticks))
+        ax.set_ylim(*ELEVATION_NATIVE_LIM)
+        ax.yaxis.set_major_locator(FixedLocator(list(ELEVATION_PLOT_TICKS)))
         ax.yaxis.set_major_formatter(fmt)
-        ax.set_ylabel("elevation (rad, arcsin + π/2)")
+        ax.set_ylabel("elevation (rad)")
 
 
 def inplane_angles_from_rotations(rotations: list[np.ndarray]) -> np.ndarray:
@@ -399,8 +389,7 @@ def summarize_orientation_sampling(
     """Diagnostics explaining sparse heatmaps vs varied 3D renders."""
     w = _normalize_weights(weights)
     E = np.asarray(energies, dtype=np.float64)
-    az_native, el_native = viewing_angles_rad_from_rotations(rotations)
-    az, el = native_to_plot_angles(az_native, el_native)
+    az, el = viewing_angles_rad_from_rotations(rotations)
     inplane = inplane_angles_from_rotations(rotations)
     dirs = directions_from_rotations(rotations)
 
@@ -408,8 +397,8 @@ def summarize_orientation_sampling(
     gaps = np.sort(E) - Emin
     w_sorted = np.sort(w)[::-1]
 
-    az_edges = np.linspace(PLOT_ANGLE_LIM[0], PLOT_ANGLE_LIM[1], n_azimuth_bins + 1)
-    el_edges = np.linspace(PLOT_ANGLE_LIM[0], PLOT_ANGLE_LIM[1], n_elevation_bins + 1)
+    az_edges = np.linspace(AZIMUTH_NATIVE_LIM[0], AZIMUTH_NATIVE_LIM[1], n_azimuth_bins + 1)
+    el_edges = np.linspace(ELEVATION_NATIVE_LIM[0], ELEVATION_NATIVE_LIM[1], n_elevation_bins + 1)
     H, _, _ = np.histogram2d(az, el, bins=[az_edges, el_edges], weights=w)
     H_unw, _, _ = np.histogram2d(az, el, bins=[az_edges, el_edges])
     occupied_weighted = int(np.count_nonzero(H > 0))
@@ -561,14 +550,14 @@ def _histogram_az_el(
     n_azimuth_bins: int,
     n_elevation_bins: int,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    az_plot, el_plot = native_to_plot_angles(azimuth_rad, elevation_rad)
-    az_edges = np.linspace(PLOT_ANGLE_LIM[0], PLOT_ANGLE_LIM[1], n_azimuth_bins + 1)
-    el_edges = np.linspace(PLOT_ANGLE_LIM[0], PLOT_ANGLE_LIM[1], n_elevation_bins + 1)
+    az, el = native_to_plot_angles(azimuth_rad, elevation_rad)
+    az_edges = np.linspace(AZIMUTH_NATIVE_LIM[0], AZIMUTH_NATIVE_LIM[1], n_azimuth_bins + 1)
+    el_edges = np.linspace(ELEVATION_NATIVE_LIM[0], ELEVATION_NATIVE_LIM[1], n_elevation_bins + 1)
     if weights is None:
-        w = np.ones(len(az_plot), dtype=np.float64) / max(len(az_plot), 1)
+        w = np.ones(len(az), dtype=np.float64) / max(len(az), 1)
     else:
         w = _normalize_weights(weights)
-    H, _, _ = np.histogram2d(az_plot, el_plot, bins=[az_edges, el_edges], weights=w)
+    H, _, _ = np.histogram2d(az, el, bins=[az_edges, el_edges], weights=w)
     return H.T, az_edges, el_edges
 
 

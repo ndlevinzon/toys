@@ -1,0 +1,23 @@
+Orientation sampling diagnostics
+================================
+n_samples: 10400
+beta: 0.01600026023543586
+E_min: 3.898e+07  E_max: 3.901e+07  E_std: 1455
+ΔE (rank 2): 0.01716  ΔE (rank 10): 0.0295
+weight rank 1: 0.0001  rank 2: 0.0001  rank 10: 0.0001
+effective sample size (ESS): 10000.00
+viewing-dir spread (all samples): 26.6°
+viewing-dir spread (top-10 by energy): 0.3°
+in-plane std (top-10 by energy): 0.2°
+occupied az/el bins (weighted / uniform): 860 / 860
+
+Beta calibration (for w_i = exp(-beta * (E_i - E_min)) / Z):
+  beta * dE_rank2 = 0.0002745
+  beta ~ 134.204  (rank-2 at 10% of rank-1)
+  beta ~ 78.0417  (rank-10 at 10% of rank-1)
+  beta ~ 78.0417  (worst of top-10 at 10% of rank-1)
+  energy IQR (all samples): 274.2
+  dE across top-10 energies: 0.0295
+
+Notes:
+  (none)

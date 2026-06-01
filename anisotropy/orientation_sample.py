@@ -37,7 +37,6 @@ from anisotropy.lattice_solvent_hamiltonian import (
 from anisotropy.orientation_diagnostics import (
     calibrate_beta_auto,
     inplane_rotation_degrees,
-    native_to_plot_angles,
     rotation_for_viewing_angles,
     save_orientation_distribution_plots,
     summarize_orientation_sampling,
@@ -845,12 +844,8 @@ def main_impl(args: argparse.Namespace, run: RunSession) -> None:
         slab_thickness,
         filename=ref_path.name,
     )
-    ref_az_plot, ref_el_plot = native_to_plot_angles(
-        np.array([az_ref]), np.array([el_ref])
-    )
     run.log(
-        f"Reference pose native (az={az_ref:.4f}, el={el_ref:.4f}) rad; "
-        f"on plots (0..π axes) at ({ref_az_plot[0]:.4f}, {ref_el_plot[0]:.4f}); "
+        f"Reference pose (az={az_ref:.4f}, el={el_ref:.4f}) rad at plot origin; "
         "lab +Z viewing ≈ particle +X"
     )
     if ref_path.is_file():
