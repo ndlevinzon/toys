@@ -50,7 +50,7 @@ conda env create -f environment-hpc.yml
 conda activate anisotropy-hpc
 ```
 
-See [../CONDA.md](../CONDA.md). After `git pull`: `conda env update -f environment-hpc.yml --prune && pip install -e . --no-deps`
+See [../CONDA.md](../CONDA.md). After `git pull`: `bash hpc/sync_env.sh` (see `environment-hpc-viz.yml` if you need PyVista on the cluster).
 
 ### 3. Test import (login node)
 

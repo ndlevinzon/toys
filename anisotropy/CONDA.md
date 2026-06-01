@@ -43,11 +43,40 @@ Use `--no-render` on `orientation_sample.py`. **`parameterize_mesh.py` runs with
 
 ## Update after `git pull`
 
+**`git pull` does not uninstall packages.** What usually removes `pyvista` / `scikit-image` is:
+
 ```bash
-conda activate anisotropy
-conda env update -f environment.yml --prune
-pip install -e . --no-deps
+conda env update -f environment-hpc.yml --prune   # --prune deletes anything not in the YAML
 ```
+
+`environment-hpc.yml` intentionally omits PyVista. Manual `conda install pyvista` is dropped the next time someone runs `--prune`.
+
+Use the sync script (no `--prune`) and pick the YAML that matches what you need:
+
+```bash
+cd path/to/toys/anisotropy
+source "$(conda info --base)/etc/profile.d/conda.sh"
+
+# Laptop / full viz (pyvista + scikit-image in YAML)
+ANISOTROPY_ENV_FILE=environment.yml ANISOTROPY_CONDA_ENV=anisotropy bash hpc/sync_env.sh
+
+# HPC with PyVista (renders, optional VTK paths) — use this if you kept conda-installing pyvista
+ANISOTROPY_ENV_FILE=environment-hpc-viz.yml ANISOTROPY_CONDA_ENV=anisotropy-hpc-viz bash hpc/sync_env.sh
+
+# HPC headless only (--no-render; parameterize works without PyVista)
+ANISOTROPY_ENV_FILE=environment-hpc.yml ANISOTROPY_CONDA_ENV=anisotropy-hpc bash hpc/sync_env.sh
+```
+
+Conda package names: **`scikit-image`** (import `skimage`), **`pyvista`**. There is no conda package named `skimage`.
+
+Optional: run sync automatically after every pull (once per clone):
+
+```bash
+cp hpc/git-hooks/post-merge .git/hooks/post-merge
+chmod +x .git/hooks/post-merge
+```
+
+Edit `.git/hooks/post-merge` if you use `anisotropy-hpc` instead of `anisotropy-hpc-viz`.
 
 ## Optional: documentation tools
 

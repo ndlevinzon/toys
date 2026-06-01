@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Install: cp hpc/git-hooks/post-merge .git/hooks/post-merge && chmod +x .git/hooks/post-merge
+# Runs after ``git pull`` (merge) on this clone only.
+
+set -euo pipefail
+ROOT="$(git rev-parse --show-toplevel)"
+ANI="$ROOT/anisotropy"
+if [[ ! -d "$ANI" ]]; then
+  exit 0
+fi
+if [[ ! -f "$ANI/hpc/sync_env.sh" ]]; then
+  exit 0
+fi
+
+# Default: HPC env with PyVista in environment-hpc-viz.yml
+export ANISOTROPY_ENV_FILE="${ANISOTROPY_ENV_FILE:-environment-hpc-viz.yml}"
+export ANISOTROPY_CONDA_ENV="${ANISOTROPY_CONDA_ENV:-anisotropy-hpc-viz}"
+
+echo "[post-merge] syncing conda env ($ANISOTROPY_CONDA_ENV) ..."
+bash "$ANI/hpc/sync_env.sh"

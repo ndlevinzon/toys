@@ -3,7 +3,7 @@
 # ``conda env update`` does not drop them when you avoid manual installs.
 #
 #   conda env create -f environment-hpc-viz.yml
-#   conda activate anisotropy-hpc
+#   conda activate anisotropy-hpc-viz
 #
 # After git pull:
 #   bash hpc/sync_env.sh   # with ANISOTROPY_ENV_FILE=environment-hpc-viz.yml

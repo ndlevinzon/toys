@@ -232,22 +232,39 @@ On the **login node**:
 cd $HOME/toys/anisotropy
 git pull origin main
 
+# Do NOT use ``--prune`` if you conda-installed pyvista by hand — it removes packages
+# not listed in the YAML. Use sync_env.sh (declares deps in environment-hpc-viz.yml).
 source "$(conda info --base)/etc/profile.d/conda.sh"
-conda activate anisotropy-hpc
-conda env update -f environment-hpc.yml --prune
-pip install -e . --no-deps
+bash hpc/sync_env.sh
+conda activate anisotropy-hpc-viz
 ```
+
+One-time: create the viz-capable HPC env (includes `scikit-image` + `pyvista`):
+
+```bash
+conda env create -f environment-hpc-viz.yml
+```
+
+Optional auto-sync after every pull (from `toys` git root):
+
+```bash
+cp anisotropy/hpc/git-hooks/post-merge .git/hooks/post-merge
+chmod +x .git/hooks/post-merge
+```
+
+See [../CONDA.md](../CONDA.md).
 
 Resubmit `sbatch` — no need to recreate the env unless dependencies changed.
 
 ---
 
-## Quick reference: two conda envs
+## Quick reference: conda envs
 
 | Env | File | Use on |
 |-----|------|--------|
 | `anisotropy-hpc` | `environment-hpc.yml` | Compute nodes, `orientation_sample.py --no-render` |
-| `anisotropy` | `environment.yml` | Login node, PROPKA parameterize, PyVista |
+| `anisotropy-hpc-viz` | `environment-hpc-viz.yml` | HPC + PyVista/VTK; survives `bash hpc/sync_env.sh` after pull |
+| `anisotropy` | `environment.yml` | Laptop / login node, full pipeline |
 
 ---
 
