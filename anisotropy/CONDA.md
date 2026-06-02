@@ -98,7 +98,37 @@ conda env create -f environment-hpc.yml
 
 ### CHPC: `Defaulting to user installation` / `No module named skimage`
 
-`pip` went to `~/.local` because `conda activate` never left the module base. Fix with `bash hpc/sync_env.sh` after `module load`, then use the env’s Python path as above.
+Symptom in Slurm (`run_ising.cpu` with `set -x`):
+
+```text
+PYTHON=/uufs/.../sys/installdir/.../miniforge3/.../bin/python
+ModuleNotFoundError: No module named 'skimage'
+```
+
+`conda activate anisotropy-hpc` did **not** put your personal env first on `PATH`; bare `python` is still the **read-only module** interpreter (no scikit-image there).
+
+**Fix (login node):**
+
+```bash
+module load miniforge3/25.11.0
+cd .../anisotropy
+bash hpc/sync_env.sh          # must end with OK skimage / anisotropy
+conda env list | grep anisotropy-hpc
+# path MUST be under $HOME/.conda/envs/..., NOT sys/installdir
+
+~/.conda/envs/anisotropy-hpc/bin/python -c "import skimage; print('ok')"
+```
+
+**Slurm / batch:** after `git pull`, use updated `run_ising.cpu` / `hpc/slurm_*.sbatch` — they call `hpc/resolve_conda_env.sh` and run `"$ANISOTROPY_PYTHON"` instead of `python`.
+
+If `sync_env.sh` says env not found, create it once:
+
+```bash
+conda env create -f environment-hpc.yml   # only if missing
+bash hpc/sync_env.sh
+```
+
+If `conda env list` shows `anisotropy-hpc` under `sys/installdir`, remove and recreate (see above).
 
 Optional: run sync automatically after every pull (once per clone):
 

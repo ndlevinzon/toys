@@ -112,9 +112,16 @@ except ImportError:
     print("  --  pyvista not installed (expected for environment-hpc.yml)")
 PY
 
+# Verify the same resolution Slurm uses (activate alone is unreliable on CHPC).
+# shellcheck source=hpc/resolve_conda_env.sh
+source "$ROOT/hpc/resolve_conda_env.sh"
+anisotropy_setup_conda "$ENV_NAME"
+anisotropy_verify_imports "$ANISOTROPY_PYTHON"
+
 echo ""
 echo "Done. In Slurm and interactive shells:"
 echo "  module load miniforge3/25.11.0"
-echo "  source \"\$(conda info --base)/etc/profile.d/conda.sh\""
-echo "  conda activate ${ENV_NAME}"
-echo "  # CONDA_PREFIX should be: ${ENV_PREFIX}"
+echo "  source $ROOT/hpc/resolve_conda_env.sh"
+echo "  anisotropy_setup_conda ${ENV_NAME}"
+echo "  \$ANISOTROPY_PYTHON orientation_sample.py ..."
+echo "  # or: export PATH=\"${ENV_PREFIX}/bin:\$PATH\" && conda activate ${ENV_NAME}"

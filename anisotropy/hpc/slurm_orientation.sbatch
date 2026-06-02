@@ -23,11 +23,11 @@ MESH="${MESH:-$RUN_DIR/9yp6.ply}"
 ISING_PARAMS="${ISING_PARAMS:-$REPO/hpc/ising_params.hpc.yaml}"
 
 # --- modules (edit: module avail conda miniforge anaconda) ---
-# module load miniforge
-# conda activate must run after conda is on PATH (often via module)
-
-source "$(conda info --base)/etc/profile.d/conda.sh"
-conda activate "$CONDA_ENV"
+module load miniforge3/25.11.0
+# shellcheck source=hpc/resolve_conda_env.sh
+source "$REPO/hpc/resolve_conda_env.sh"
+anisotropy_setup_conda "$CONDA_ENV"
+anisotropy_verify_imports "$ANISOTROPY_PYTHON"
 cd "$REPO"
 
 # One thread per process; multiprocessing uses SLURM_CPUS_PER_TASK workers
@@ -42,7 +42,7 @@ mkdir -p "$OUT_DIR"
 echo "Job $SLURM_JOB_ID on $(hostname) at $(date)"
 echo "REPO=$REPO OUT_DIR=$OUT_DIR CPUS=$CPUS"
 
-python orientation_sample.py \
+"$ANISOTROPY_PYTHON" orientation_sample.py \
   "$PDB" "$MESH" \
   --ising-params "$ISING_PARAMS" \
   --outdir "$OUT_DIR" \

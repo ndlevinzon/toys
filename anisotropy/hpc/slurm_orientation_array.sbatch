@@ -14,8 +14,11 @@ REPO="${REPO:-$HOME/toys/anisotropy}"
 CONDA_ENV="${CONDA_ENV:-anisotropy-hpc}"
 BASE="${BASE:-$SCRATCH/toys_runs}"
 
-source "$(conda info --base)/etc/profile.d/conda.sh"
-conda activate "$CONDA_ENV"
+module load miniforge3/25.11.0
+# shellcheck source=hpc/resolve_conda_env.sh
+source "$REPO/hpc/resolve_conda_env.sh"
+anisotropy_setup_conda "$CONDA_ENV"
+anisotropy_verify_imports "$ANISOTROPY_PYTHON"
 cd "$REPO"
 
 export OMP_NUM_THREADS=1
@@ -35,7 +38,7 @@ OUT_DIR="$RUN_DIR/runs/orient_${SLURM_ARRAY_JOB_ID}_${IDX}"
 mkdir -p "$OUT_DIR"
 echo "Array task $IDX -> $RUN_DIR"
 
-python orientation_sample.py \
+"$ANISOTROPY_PYTHON" orientation_sample.py \
   "$PDB" "$MESH" \
   --ising-params "$REPO/hpc/ising_params.hpc.yaml" \
   --outdir "$OUT_DIR" \

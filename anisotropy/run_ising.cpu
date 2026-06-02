@@ -22,28 +22,19 @@ PDB=${RUN_DIR}/9yp6.pdb
 MESH=${RUN_DIR}/9yp6.ply
 ISING_PARAMS=${REPO}/hpc/ising_params.hpc.yaml
 
-# Conda env *name* (not a path). Must match ``name:`` in environment-hpc.yml.
 CONDA_ENV=anisotropy-hpc
 
-# --- environment ---
+# --- environment (never use bare ``python`` on CHPC — module base shadows the env) ---
 module purge
 module load miniforge3/25.11.0
-source "$(conda info --base)/etc/profile.d/conda.sh"
-conda activate "${CONDA_ENV}"
+# shellcheck source=hpc/resolve_conda_env.sh
+source "${REPO}/hpc/resolve_conda_env.sh"
+anisotropy_setup_conda "${CONDA_ENV}"
 
-export PIP_USER=0
-export PYTHONNOUSERSITE=1
-
-# Fail fast: never run on the read-only Miniforge module base.
 echo "CONDA_PREFIX=${CONDA_PREFIX:-unset}"
-if [[ "${CONDA_PREFIX:-}" == *"/sys/installdir/"* ]]; then
-  echo "ERROR: conda activate did not switch to personal env ${CONDA_ENV}." >&2
-  echo "Run on login node: module load miniforge3/25.11.0 && bash hpc/sync_env.sh" >&2
-  exit 1
-fi
-echo "PYTHON=$(which python)"
-python -c "import sys; print('executable', sys.executable); print('prefix', sys.prefix)"
-python -c "import skimage; print('scikit-image', skimage.__version__)"
+echo "ANISOTROPY_ENV_PREFIX=${ANISOTROPY_ENV_PREFIX}"
+echo "ANISOTROPY_PYTHON=${ANISOTROPY_PYTHON}"
+anisotropy_verify_imports "${ANISOTROPY_PYTHON}"
 
 export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1
@@ -63,7 +54,7 @@ echo "PDB=${PDB} MESH=${MESH}"
 echo "ISING_PARAMS=${ISING_PARAMS}"
 echo "CPUS=${CPUS}"
 
-python orientation_sample.py \
+"${ANISOTROPY_PYTHON}" orientation_sample.py \
   "${PDB}" "${MESH}" \
   --ising-params "${ISING_PARAMS}" \
   --outdir "${OUT_DIR}" \
