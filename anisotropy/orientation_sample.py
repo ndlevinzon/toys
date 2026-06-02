@@ -1112,6 +1112,7 @@ def main_impl(args: argparse.Namespace, run: RunSession) -> None:
                 slab_thickness,
                 name_prefix="least_probable",
             )
+        )
         legacy = args.outdir / "system_view.png"
         if ref is not None and not legacy.exists():
             shutil.copy2(ref, legacy)
