@@ -3,12 +3,14 @@ Hybrid lattice-gas / electrostatics Hamiltonian for protein at the AWI (cryo-EM)
 
 Combines:
 
+* **Layered solvation** (optional): 3D-RISM-inspired first shell within
+  ``rism.first_shell_angstrom`` of the surface; outer voxels use lattice-gas /
+  **Ising** couplings (:mod:`anisotropy.rism_solvation`).
 * Lattice-gas / **Ising** solvent :math:`n_i\in\{0,1\}` (binary) or explicit
   three-state occupancy (air / interfacial water / bulk-like water) when grid
   spacing ≳ 3 Å.
-* Optional **PB-like** pairwise electrostatics from patch charges and dipoles
-  in a screened Coulomb kernel (placeholder for full heterogeneous Green's
-  function / PB).
+* **Electrostatics:** fast slab linearized Poisson–Boltzmann (:mod:`pb_slab_solver`,
+  default) or legacy screened pairwise Coulomb between patches.
 * **Hydrophobic / polar / H-bond** couplings from :class:`~anisotropy.patches.PatchFeatures`
   and outward-ray indicators.
 * **Film / interface ageing** via :mod:`awi_field` coverage and mechanical state.
@@ -862,8 +864,52 @@ def precompute_solvation_energy(
     occupancy_mode: Literal["binary", "ternary"] = "binary",
     confinement_penalty_outside: float = 1.0,
     confinement_interface_softness: float = 4.0,
+    shell_cache: Any | None = None,
+    rism_params: Any | None = None,
+    param: PatchParameterization | None = None,
+    pose_R: np.ndarray | None = None,
+    pose_t: np.ndarray | None = None,
+    lab_xyz_flat: np.ndarray | None = None,
 ) -> tuple[float, dict]:
-    r"""Compute \(H_{\mathrm{solv}}\) once when occupancy does not vary with pose."""
+    r"""
+    Compute \(H_{\mathrm{solv}}\) when occupancy does not vary with pose.
+
+    If ``shell_cache`` and ``rism_params.enabled``, uses layered solvation:
+    3D-RISM-inspired first shell + Ising outer shell. For orientation scans,
+    pass ``pose_R``, ``pose_t``, and ``param`` at the reference pose, or use
+    :func:`~anisotropy.rism_solvation.precompute_outer_solvation_only` and add
+    RISM per pose in the fast evaluator.
+    """
+    use_rism = (
+        shell_cache is not None
+        and rism_params is not None
+        and bool(getattr(rism_params, "enabled", False))
+    )
+    if use_rism:
+        from anisotropy.rism_solvation import precompute_layered_solvation_energy
+
+        if hasattr(rism_params, "to_rism_module_params"):
+            rism_params = rism_params.to_rism_module_params()
+        R = np.eye(3, dtype=np.float64) if pose_R is None else pose_R
+        t = np.zeros(3, dtype=np.float64) if pose_t is None else pose_t
+        if param is None:
+            raise ValueError("param required for layered RISM solvation precompute")
+        return precompute_layered_solvation_energy(
+            occupancy,
+            lattice,
+            slab,
+            coeffs,
+            shell_cache,
+            rism_params,
+            param,
+            R,
+            t,
+            occupancy_mode=occupancy_mode,
+            confinement_penalty_outside=confinement_penalty_outside,
+            confinement_interface_softness=confinement_interface_softness,
+            lab_xyz_flat=lab_xyz_flat,
+        )
+
     slab_z_bounds = (0.0, float(slab.thickness_angstrom))
     z_lab = lattice.grid_centers_xyz()[..., 2].ravel()
     u_vec = film_potential_per_cell(
@@ -913,10 +959,12 @@ def evaluate_hybrid_hamiltonian(
     *,
     occupancy_mode: Literal["binary", "ternary"] = "binary",
     canonical_interior: CanonicalInteriorCache | None = None,
+    shell_cache: Any | None = None,
     lab_xyz_flat: np.ndarray | None = None,
     h_solv_and_terms: tuple[float, dict] | None = None,
     use_slow_pyvista_voxel: bool = False,
     ising_params: Any | None = None,
+    pb_solver: Any | None = None,
 ) -> HybridHamiltonianResult:
     """
     Evaluate \\(H = H_{\\mathrm{solv}} + H_{\\mathrm{hp/pol/HB}}
@@ -938,10 +986,11 @@ def evaluate_hybrid_hamiltonian(
     else:
         lab_xyz_flat_arr = lab_xyz_flat
 
-    if use_slow_pyvista_voxel or canonical_interior is None:
+    _shell = shell_cache if shell_cache is not None else canonical_interior
+    if use_slow_pyvista_voxel or _shell is None:
         interior = voxelize_protein_interior(mesh, lattice, pose_R, pose_t)
     else:
-        interior = canonical_interior.lab_interior_mask(
+        interior = _shell.lab_interior_mask(
             lattice, pose_R, pose_t, lab_xyz_flat=lab_xyz_flat_arr
         )
 
@@ -966,12 +1015,39 @@ def evaluate_hybrid_hamiltonian(
 
     if h_solv_and_terms is not None:
         h_sol, solv_terms = float(h_solv_and_terms[0]), dict(h_solv_and_terms[1])
+        rism_cfg = None
+        if ising_params is not None:
+            rism_cfg = ising_params.rism.to_rism_module_params()
+        if (
+            shell_cache is not None
+            and rism_cfg is not None
+            and bool(rism_cfg.enabled)
+            and solv_terms.get("layered_solvation")
+        ):
+            from anisotropy.rism_solvation import rism_first_shell_energy
+
+            first_mask, _, _ = shell_cache.lab_shell_masks(
+                lattice, pose_R, pose_t, lab_xyz_flat=lab_xyz_flat_arr
+            )
+            h_rism, rism_terms = rism_first_shell_energy(
+                occupancy,
+                first_mask,
+                lab_xyz_flat_arr,
+                param_pose,
+                rism_cfg,
+                occupancy_mode=occupancy_mode,
+            )
+            h_outer = float(solv_terms.get("H_solv_outer", h_sol))
+            h_sol = h_outer + h_rism
+            solv_terms = {**solv_terms, **rism_terms, "H_solv_total": h_sol}
     else:
         conf_pen = 1.0
         conf_soft = 4.0
+        rism_params = None
         if ising_params is not None:
             conf_pen = ising_params.confinement.penalty_outside
             conf_soft = ising_params.confinement.interface_softness_angstrom
+            rism_params = ising_params.rism.to_rism_module_params()
         h_sol, solv_terms = precompute_solvation_energy(
             occupancy,
             lattice,
@@ -980,6 +1056,12 @@ def evaluate_hybrid_hamiltonian(
             occupancy_mode=occupancy_mode,
             confinement_penalty_outside=conf_pen,
             confinement_interface_softness=conf_soft,
+            shell_cache=shell_cache,
+            rism_params=rism_params,
+            param=param,
+            pose_R=pose_R,
+            pose_t=pose_t,
+            lab_xyz_flat=lab_xyz_flat_arr,
         )
 
     i_air, i_int = compute_patch_indicators_for_parameterization(
@@ -1001,9 +1083,17 @@ def evaluate_hybrid_hamiltonian(
         lambda_hb=coeffs.lambda_hb,
     )
 
-    hel, electrostatic_terms = electrostatic_energy_pb_like(
+    el_method = "screened_pair"
+    if ising_params is not None:
+        el_method = str(ising_params.electrostatics.method).lower()
+
+    from anisotropy.pb_slab_solver import electrostatic_energy_dispatch
+
+    hel, electrostatic_terms = electrostatic_energy_dispatch(
         param_pose,
         slab,
+        pb_solver=pb_solver,
+        method=el_method,
         homogeneous_epsilon=coeffs.homogeneous_epsilon,
         homogeneous_kappa=coeffs.homogeneous_kappa,
         use_intrinsic_potential=el_use_phi0,

@@ -18,9 +18,9 @@ tabulate them on a 1D grid (Green's function along the film normal) and
 interpolate — the analog of a 1D spectral (Fourier in z) representation without
 a full 3D PB FFT.
 
-A full heterogeneous Poisson–Boltzmann solve in reciprocal space (FFT in x,y
-and mode expansion in z) is not implemented here; pairwise precomputation
-captures the dominant cost for rotating point charges.
+For full grid PB with ε(z) from the AWI slab, see :mod:`anisotropy.pb_slab_solver`
+(FFT in x,y + tridiagonal z). This module keeps the rotation-invariant pairwise
+precomputation used when ``electrostatics.method: screened_pair``.
 """
 
 from __future__ import annotations

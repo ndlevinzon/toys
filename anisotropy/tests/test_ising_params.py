@@ -46,3 +46,13 @@ def test_slab_build(params) -> None:
 def test_from_ising_params_classmethod() -> None:
     c = HybridHamiltonianCouplings.from_ising_params()
     assert c.J_solv == 1.0
+
+
+def test_hpc_yaml_extends_base() -> None:
+    hpc_path = DEFAULT_ISING_PARAMS_PATH.parent / "hpc" / "ising_params.hpc.yaml"
+    if not hpc_path.is_file():
+        pytest.skip("hpc/ising_params.hpc.yaml not found")
+    p = load_ising_params(hpc_path)
+    assert p.rism.enabled is True
+    assert p.electrostatics.method == "pb_slab"
+    assert p.sampling.mcmc.mode == "fixed_beta"

@@ -19,7 +19,9 @@ Educational research code for **solvent-accessible surface (SAS) meshing**, **pa
 | **Mesh & shape** | Iterative SAS marching cubes; asphericity, principal axes |
 | **Patches** | Curvature patches; hydropathy, charge, dipole, PROPKA pKa |
 | **AWI slab** | Depth-dependent ε, κ, φ₀, E₀; asymmetric top/bottom interfaces |
-| **Hamiltonian** | H_solv + hydration + screened Coulomb + film (+ optional flex) |
+| **Layered solvation** | RISM-inspired first shell (5 Å) + Ising outer shell (`rism_solvation.py`) |
+| **Electrostatics** | Linearized slab Poisson–Boltzmann (FFT×z) or legacy screened pairs |
+| **Hamiltonian** | H_solv + hydration + H_el + film (+ optional flex) |
 | **Sampling** | Uniform / hybrid / MCMC; **replica exchange** & simulated annealing |
 | **Performance** | Fast evaluator, rotation-invariant H_el pair, parallel CPU chains |
 | **CLI** | Append-only `anisotropy_run.log`; tqdm progress on console |
@@ -71,8 +73,12 @@ Console shows a **progress bar only**; details append to **`anisotropy_run.log`*
 | Resource | Description |
 |----------|-------------|
 | [docs/](docs/) | Sphinx sources (Read the Docs) |
+| [docs/PHYSICS_AND_PIPELINE.md](docs/PHYSICS_AND_PIPELINE.md) | **Integration map** — workflow, physics stack, rigor ladder |
 | [docs/HYBRID_HAMILTONIAN_PARAMETERS.md](docs/HYBRID_HAMILTONIAN_PARAMETERS.md) | Every YAML knob explained |
+| [docs/RISM_LAYERED_SOLVATION.md](docs/RISM_LAYERED_SOLVATION.md) | First-shell RISM + outer Ising |
+| [docs/PB_SLAB_ELECTROSTATICS.md](docs/PB_SLAB_ELECTROSTATICS.md) | Slab linearized Poisson–Boltzmann |
 | [docs/user_guide/orientation_sampling.rst](docs/user_guide/orientation_sampling.rst) | β auto, hybrid, replica exchange |
+| [hpc/README.md](hpc/README.md) | Slurm, `ising_params.hpc.yaml`, `sync_env.sh` |
 | [.readthedocs.yaml](.readthedocs.yaml) | Hosted docs config |
 
 Build locally:
@@ -89,6 +95,8 @@ sphinx-build -b html docs docs/_build/html
 ```
 anisotropy/                 # import package
   awi_field.py
+  rism_solvation.py
+  pb_slab_solver.py
   fast_orientation_eval.py
   orientation_mcmc.py
   orientation_multimodal.py
@@ -144,7 +152,7 @@ Windows helpers: `run.ps1` / `run.bat` (local `.venv` or toys venv).
 
 **Performance flags** (`performance` in YAML): fast evaluator, invariant H_el pair, electrostatic cutoff, parallel MCMC chains — see [docs/user_guide/performance.rst](docs/user_guide/performance.rst).
 
-**Outputs** (`--outdir`): energy traces, viewing-direction heatmaps & probability sphere, `top_poses.json`, optional `system_view_*.png`.
+**Outputs** (`--outdir`): energy traces, viewing-direction heatmaps & probability sphere, `top_poses.json`, and by default **10 most / 10 least probable** PNGs in `views_z_down/` (camera along lab +Z). Use `--no-render` on HPC.
 
 ---
 

@@ -59,6 +59,46 @@ def _section(data: dict[str, Any], key: str) -> dict[str, Any]:
     return block
 
 
+def _deep_merge_yaml(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    """Recursively merge override into base (override wins at leaves)."""
+    merged: dict[str, Any] = dict(base)
+    for key, value in override.items():
+        if key == "extends":
+            continue
+        if (
+            key in merged
+            and isinstance(merged[key], dict)
+            and isinstance(value, dict)
+        ):
+            merged[key] = _deep_merge_yaml(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def _load_yaml_root(path: Path) -> dict[str, Any]:
+    """Load YAML, resolving optional top-level ``extends: <path>`` (relative to file)."""
+    with path.open(encoding="utf-8") as handle:
+        raw = yaml.safe_load(handle)
+    if not isinstance(raw, dict):
+        raise ValueError(f"{path}: root must be a YAML mapping")
+
+    extends = raw.get("extends")
+    if extends is None:
+        return raw
+
+    base_path = Path(extends)
+    if not base_path.is_absolute():
+        base_path = (path.parent / base_path).resolve()
+    if not base_path.is_file():
+        raise FileNotFoundError(
+            f"{path}: extends file not found: {base_path}"
+        )
+
+    base_raw = _load_yaml_root(base_path)
+    return _deep_merge_yaml(base_raw, raw)
+
+
 def _f(block: dict[str, Any], key: str, default: float) -> float:
     if key not in block or block[key] is None:
         return float(default)
@@ -95,6 +135,42 @@ def _enum_mechanical(name: str) -> InterfaceMechanicalState:
     if key not in _MECHANICAL_MAP:
         raise ValueError(f"Unknown mechanical_state '{name}' in ising_params.yaml")
     return _MECHANICAL_MAP[key]
+
+
+@dataclass(frozen=True)
+class RismSolvationParams:
+    """First-shell 3D-RISM-inspired solvation (see :mod:`anisotropy.rism_solvation`)."""
+
+    enabled: bool = True
+    first_shell_angstrom: float = 5.0
+    bulk_number_density: float = 0.0334
+    temperature_k: float = 300.0
+    dielectric: float = 78.0
+    lj_sigma_oo_angstrom: float = 3.166
+    lj_epsilon_oo_kcal: float = 0.1554
+    coulomb_scale: float | None = None
+    kh_strength: float = 1.0
+    cavity_gamma_kcal_per_ang2: float = 0.12
+    site_cutoff_angstrom: float = 8.0
+    energy_scale: float = 1.0
+
+    def to_rism_module_params(self) -> Any:
+        from anisotropy.rism_solvation import RismSolvationParams as _R
+
+        return _R(
+            enabled=self.enabled,
+            first_shell_angstrom=self.first_shell_angstrom,
+            bulk_number_density=self.bulk_number_density,
+            temperature_k=self.temperature_k,
+            dielectric=self.dielectric,
+            lj_sigma_oo_angstrom=self.lj_sigma_oo_angstrom,
+            lj_epsilon_oo_kcal=self.lj_epsilon_oo_kcal,
+            coulomb_scale=self.coulomb_scale or 332.0636,
+            kh_strength=self.kh_strength,
+            cavity_gamma_kcal_per_ang2=self.cavity_gamma_kcal_per_ang2,
+            site_cutoff_angstrom=self.site_cutoff_angstrom,
+            energy_scale=self.energy_scale,
+        )
 
 
 @dataclass(frozen=True)
@@ -146,12 +222,29 @@ class FlexParams:
 
 @dataclass(frozen=True)
 class ElectrostaticParams:
+    # screened_pair: legacy Yukawa pairwise; pb_slab: FFT×z tridiagonal linearized PB
+    method: str = "pb_slab"
     homogeneous_epsilon: float | None = None
     homogeneous_kappa: float | None = None
     r_smooth_angstrom: float = 0.01
     use_intrinsic_potential: bool = True
     use_dipole_E0_component: bool = True
     coulomb_scale: float | None = None
+    pb_coarse_factor: int = 2
+    pb_charge_sigma_voxels: float = 1.25
+
+    def to_pb_solver_params(self) -> Any:
+        from anisotropy.pb_slab_solver import PBSolverParams
+
+        return PBSolverParams(
+            enabled=str(self.method).lower() == "pb_slab",
+            method=str(self.method).lower(),  # type: ignore[arg-type]
+            coarse_factor=int(self.pb_coarse_factor),
+            charge_sigma_voxels=float(self.pb_charge_sigma_voxels),
+            coulomb_scale=self.coulomb_scale,
+            use_intrinsic_potential=self.use_intrinsic_potential,
+            use_dipole_E0_component=self.use_dipole_E0_component,
+        )
 
 
 @dataclass(frozen=True)
@@ -258,6 +351,14 @@ class McmcSamplingParams:
 
 
 @dataclass(frozen=True)
+class OutputParams:
+    """PNG snapshots and pose lists written after sampling."""
+
+    n_orientation_renders: int = 10
+    render_snapshots: bool = True
+
+
+@dataclass(frozen=True)
 class SamplingParams:
     n_samples: int = 600
     seed: int = 0
@@ -288,6 +389,8 @@ class IsingParams:
     lattice: LatticeGeometryParams = field(default_factory=LatticeGeometryParams)
     sampling: SamplingParams = field(default_factory=SamplingParams)
     performance: PerformanceParams = field(default_factory=PerformanceParams)
+    rism: RismSolvationParams = field(default_factory=RismSolvationParams)
+    output: OutputParams = field(default_factory=OutputParams)
 
     def to_hybrid_couplings(self) -> HybridHamiltonianCouplings:
         return HybridHamiltonianCouplings(
@@ -433,10 +536,7 @@ def load_ising_params(path: str | Path | None = None) -> IsingParams:
             f"Expected default at {DEFAULT_ISING_PARAMS_PATH}"
         )
 
-    with yaml_path.open(encoding="utf-8") as handle:
-        raw = yaml.safe_load(handle)
-    if not isinstance(raw, dict):
-        raise ValueError(f"{yaml_path}: root must be a YAML mapping")
+    raw = _load_yaml_root(yaml_path.resolve())
 
     solv_b = _section(raw, "solv")
     occ = str(solv_b.get("occupancy_mode", "binary")).strip().lower()
@@ -453,6 +553,8 @@ def load_ising_params(path: str | Path | None = None) -> IsingParams:
     prof_b = _section(raw, "awi_profile")
     lat_b = _section(raw, "lattice")
     samp_b = _section(raw, "sampling")
+    out_b = _section(raw, "output")
+    rism_b = _section(raw, "rism")
 
     default_bottom = AwiInterfaceParams()
     default_top = SlabParams().top
@@ -486,12 +588,15 @@ def load_ising_params(path: str | Path | None = None) -> IsingParams:
         ),
         flex=FlexParams(eta_flex=_f(flex_b, "eta_flex", 0.0)),
         electrostatics=ElectrostaticParams(
+            method=str(el_b.get("method", "pb_slab")).lower(),
             homogeneous_epsilon=_opt_f(el_b, "homogeneous_epsilon"),
             homogeneous_kappa=_opt_f(el_b, "homogeneous_kappa"),
             r_smooth_angstrom=_f(el_b, "r_smooth_angstrom", 0.01),
             use_intrinsic_potential=_b(el_b, "use_intrinsic_potential", True),
             use_dipole_E0_component=_b(el_b, "use_dipole_E0_component", True),
             coulomb_scale=_opt_f(el_b, "coulomb_scale"),
+            pb_coarse_factor=_i(el_b, "pb_coarse_factor", 2),
+            pb_charge_sigma_voxels=_f(el_b, "pb_charge_sigma_voxels", 1.25),
         ),
         slab=SlabParams(
             thickness_angstrom=_f(slab_b, "thickness_angstrom", 300.0),
@@ -528,6 +633,24 @@ def load_ising_params(path: str | Path | None = None) -> IsingParams:
         ),
         sampling=_load_sampling_params(samp_b),
         performance=_load_performance_params(_section(raw, "performance")),
+        output=OutputParams(
+            n_orientation_renders=_i(out_b, "n_orientation_renders", 10),
+            render_snapshots=_b(out_b, "render_snapshots", True),
+        ),
+        rism=RismSolvationParams(
+            enabled=_b(rism_b, "enabled", True),
+            first_shell_angstrom=_f(rism_b, "first_shell_angstrom", 5.0),
+            bulk_number_density=_f(rism_b, "bulk_number_density", 0.0334),
+            temperature_k=_f(rism_b, "temperature_k", 300.0),
+            dielectric=_f(rism_b, "dielectric", 78.0),
+            lj_sigma_oo_angstrom=_f(rism_b, "lj_sigma_oo_angstrom", 3.166),
+            lj_epsilon_oo_kcal=_f(rism_b, "lj_epsilon_oo_kcal", 0.1554),
+            coulomb_scale=_opt_f(rism_b, "coulomb_scale"),
+            kh_strength=_f(rism_b, "kh_strength", 1.0),
+            cavity_gamma_kcal_per_ang2=_f(rism_b, "cavity_gamma_kcal_per_ang2", 0.12),
+            site_cutoff_angstrom=_f(rism_b, "site_cutoff_angstrom", 8.0),
+            energy_scale=_f(rism_b, "energy_scale", 1.0),
+        ),
     )
 
 
@@ -669,6 +792,12 @@ def apply_cli_overrides(params: IsingParams, args: Any) -> IsingParams:
     if getattr(args, "parallel_workers", None) is not None:
         perf = replace(perf, parallel_workers=int(args.parallel_workers))
 
+    output = params.output
+    if getattr(args, "n_render_poses", None) is not None:
+        output = replace(output, n_orientation_renders=int(args.n_render_poses))
+    if getattr(args, "no_render", False):
+        output = replace(output, render_snapshots=False)
+
     return replace(
         params,
         solv=solv,
@@ -680,4 +809,5 @@ def apply_cli_overrides(params: IsingParams, args: Any) -> IsingParams:
         lattice=lattice,
         sampling=sampling,
         performance=perf,
+        output=output,
     )

@@ -87,7 +87,9 @@ rsync -avz anisotropy/9yp6.{pdb,ply} USER@cluster:~/scratch/toys_runs/9yp6/
 
 For step 3, use **`--no-render`** and match **`--parallel-workers`** to Slurm CPUs.
 
-Copy `hpc/ising_params.hpc.yaml` and pass `--ising-params` for cluster-tuned settings.
+Copy `hpc/ising_params.hpc.yaml` and pass `--ising-params` for cluster-tuned settings
+(same physics defaults as `ising_params.yaml`: layered RISM + `pb_slab`, `--no-render`,
+`parallel_mcmc_chains: false` when using full PB). See [../docs/PHYSICS_AND_PIPELINE.md](../docs/PHYSICS_AND_PIPELINE.md).
 
 ---
 
@@ -109,7 +111,8 @@ squeue -u $USER
 tail -f slurm-orient-*.out   # job name from script
 ```
 
-Results: `$OUT_DIR/top_poses.json`, diagnostics PNG/JSON, `anisotropy_run.log`.
+Results: `$OUT_DIR/top_poses.json` (MAP = max weight; `most_probable_poses` / `least_probable_poses`),
+diagnostics PNG/JSON, `anisotropy_run.log`. No `views_z_down/` unless you drop `--no-render` and use the viz env.
 
 ---
 

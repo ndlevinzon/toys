@@ -15,10 +15,19 @@ weights \(\propto \exp(-\beta H)\). To connect to experiment or MD, calibrate **
 reference energy (e.g. hydrogen-bond or surface tension) and rescale the other
 couplings relative to it.
 
-**v0 scope.** `orientation_sample.py` uses a **fixed binary solvent occupancy**
+**Sampler scope.** `orientation_sample.py` uses a **fixed binary solvent occupancy**
 (water slab in \(z\in[0,L]\), air outside). It does **not** Monte Carlo over lattice
-spins \(n_i\) yet; only rigid orientations \(\Omega\) are sampled. Parameters below
-still define \(H[n;\Omega]\) for when spin sampling is added.
+spins \(n_i\) yet; only rigid orientations \(\Omega\) are sampled.
+
+**Layered solvation (default):** when `rism.enabled: true`, the first solvation shell
+(\(d \le\) `rism.first_shell_angstrom`) uses a RISM-inspired excess potential per pose;
+the outer grid uses masked Ising cohesion. See [RISM_LAYERED_SOLVATION.md](RISM_LAYERED_SOLVATION.md).
+
+**Electrostatics (default):** `electrostatics.method: pb_slab` solves linearized Poisson–Boltzmann
+on the lattice with \(\varepsilon(z)\), \(\kappa(z)\) from the AWI slab. See
+[PB_SLAB_ELECTROSTATICS.md](PB_SLAB_ELECTROSTATICS.md).
+
+**Pipeline overview:** [PHYSICS_AND_PIPELINE.md](PHYSICS_AND_PIPELINE.md).
 
 ---
 
@@ -43,7 +52,22 @@ H = H_{\mathrm{solv}} + H_{\mathrm{hp}} + H_{\mathrm{pol}} + H_{\mathrm{HB}}
 
 ---
 
-## 2. Lattice gas / Ising solvent — \(H_{\mathrm{solv}}\)
+## 2. Solvation — \(H_{\mathrm{solv}}\) (layered or legacy)
+
+When `rism.enabled: true` (default in `ising_params.yaml`):
+
+\[
+H_{\mathrm{solv}} = H_{\mathrm{RISM}}^{(\mathrm{1st\ shell})} + H_{\mathrm{Ising}}^{(\mathrm{outer})}.
+\]
+
+| Region | Distance to SAS surface | Model | Pose dependence |
+|--------|-------------------------|--------|-----------------|
+| First shell | \(0 < d \le\) `rism.first_shell_angstrom` (5 Å) | `rism_first_shell_energy` | Yes (each \(\Omega\)) |
+| Outer shell | \(d >\) first-shell radius | Masked `solvation_energy_lattice_gas` | No (precomputed once) |
+
+YAML block `rism:` — see [RISM_LAYERED_SOLVATION.md](RISM_LAYERED_SOLVATION.md).
+
+When `rism.enabled: false`, the entire solvent lattice uses a single Ising term (legacy).
 
 ### 2.1 Occupancy variables
 
@@ -186,30 +210,42 @@ These are **not** Ising parameters but set the coupling strengths per patch:
 
 ---
 
-## 6. Electrostatics — \(H_{\mathrm{el}}\) (PB-like placeholder)
+## 6. Electrostatics — \(H_{\mathrm{el}}\)
+
+YAML: `electrostatics:` in `ising_params.yaml`.
+
+### 6.1 `method: pb_slab` (default)
+
+Linearized Poisson–Boltzmann on the orientation lattice with lateral homogeneity:
+\(\varepsilon(z)\), \(\kappa(z)\) from `VitrifiedWaterSlab`, FFT in \((x,y)\), tridiagonal in \(z\).
+
+\[
+H_{\mathrm{el}} \approx \sum_\alpha q_\alpha\,\phi(\mathbf r_\alpha)
+  + \sum_\alpha q_\alpha\,\phi_0(z_\alpha)
+  + \sum_\alpha \boldsymbol\mu_\alpha\cdot\mathbf E_0(z_\alpha).
+\]
+
+| Parameter | Default | Role |
+|-----------|---------|------|
+| `method` | `pb_slab` | `pb_slab` or `screened_pair` |
+| `pb_coarse_factor` | `2` | Coarser grid for PB solve (speed) |
+| `use_intrinsic_phi0` | `true` | Slab intrinsic \(\phi_0\) |
+| `use_intrinsic_E0` | `true` | Slab intrinsic \(\mathbf E_0\) |
+
+**Limitations:** linearized PB; \(\varepsilon\) varies only with \(z\); protein interior not a
+low-dielectric cavity. See [PB_SLAB_ELECTROSTATICS.md](PB_SLAB_ELECTROSTATICS.md).
+
+**Parallel MCMC:** workers may not rebuild `SlabPBSolver`; use `performance.parallel_mcmc_chains: false` for full PB on all chains.
+
+### 6.2 `method: screened_pair` (legacy)
 
 \[
 H_{\mathrm{el}} \approx
   \sum_{\alpha<\beta} q_\alpha\, G_{\varepsilon,\kappa}(\mathbf r_{\alpha\beta})\, q_\beta
-  + \sum_\alpha q_\alpha\,\phi_0(z_\alpha)
-  + \sum_\alpha \boldsymbol\mu_\alpha\cdot\mathbf E_0(z_\alpha)
+  + \text{intrinsic terms}.
 \]
 
-**Screened Coulomb kernel** (midpoint dielectric, pairwise):
-
-\[
-G \approx \frac{k}{\varepsilon\, r}\, e^{-\kappa r}, \quad k = \texttt{COULOMB\_SCALE}
-\]
-
-| Parameter | Default | Override CLI |
-|-----------|---------|--------------|
-| \(\varepsilon\) | From slab profile \((\varepsilon_\parallel+\varepsilon_\perp)/2\) at patch \(z\) | `--homogeneous-epsilon` |
-| \(\kappa\) (1/Å) | From slab profile (often `0`) | `--homogeneous-kappa` |
-| `r_smooth` | `1e-2` Å | (code only) |
-| Use \(\phi_0\) term | on | — |
-| Use \(\boldsymbol\mu\cdot\mathbf E_0\) | on (\(E_0\) along lab \(+\hat z\)) | — |
-
-**Not yet implemented:** heterogeneous Green’s function from full Poisson–Boltzmann; replace `green_yukawa_coulomb` when MD/FEM profiles are available.
+\(G \approx (k/\varepsilon r)\, e^{-\kappa r}\), \(k = \texttt{COULOMB\_SCALE}\). Midpoint \(\varepsilon,\kappa\) at patch \(z\).
 
 ---
 
@@ -307,6 +343,9 @@ H_{\mathrm{flex}} = \eta_{\mathrm{flex}} \sum_f (u_f - \bar u)^2
 | Run receipt log | `anisotropy_run.log` (append) | `--log-file`, `--log-overwrite` |
 | Mesh fit resolutions | `3.5, 2.5, 1.8` Å | `--resolutions` (with `--fit-mesh`) |
 | SAS probe radius | `1.4` Å | `fit_protein_mesh.py --probe` |
+| RISM first shell | `enabled: true`, 5 Å | `rism:` block |
+| PB electrostatics | `method: pb_slab` | `electrostatics:` block |
+| Weighted pose renders | `10` + `10` | `output.n_orientation_renders`, `--n-render-poses`, `--no-render` |
 
 **Multimodal modes** (`anisotropy/orientation_multimodal.py`): `simulated_annealing` cools
 \(\beta_k\) with optional reheating; `replica_exchange` uses parallel tempering with
@@ -336,9 +375,12 @@ detailed-balance swaps. Both reweight kept samples to \(\beta_{\mathrm{target}}\
 |------|-----------------|
 | Define couplings | `HybridHamiltonianCouplings` |
 | Evaluate \(H\) | `evaluate_hybrid_hamiltonian` |
-| Fixed-\(n\) solvation only | `precompute_solvation_energy` |
+| Layered solvation | `precompute_solvation_energy`, `precompute_outer_solvation_only`, `rism_solvation` |
+| Slab PB | `pb_slab_solver.SlabPBSolver` |
 | AWI fields | `build_cryo_slab_preset`, `build_depth_profile` |
 | Patch features | `parameterize_mesh` |
+| Fast pose loop | `fast_orientation_eval.FastOrientationEvaluator` |
 | Sample orientations | `orientation_sample.py` |
+| Integration map | [PHYSICS_AND_PIPELINE.md](PHYSICS_AND_PIPELINE.md) |
 
 CLI help: `python orientation_sample.py --help`, `python parameterize_mesh.py --help`.

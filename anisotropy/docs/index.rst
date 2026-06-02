@@ -17,8 +17,11 @@ lattice-gas / electrostatic Hamiltonian at a vitrified water slab.
 
 .. toctree::
    :maxdepth: 2
-   :caption: Hamiltonian & parameters
+   :caption: Physics & parameters
 
+   PHYSICS_AND_PIPELINE
+   RISM_LAYERED_SOLVATION
+   PB_SLAB_ELECTROSTATICS
    hamiltonian/parameters
 
 .. toctree::

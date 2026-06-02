@@ -32,6 +32,9 @@ Configuration
 Hamiltonian and sampler defaults live in ``ising_params.yaml``. Override keys on the
 CLI (``orientation_sample.py``) or load a custom file with ``--ising-params``.
 
+For how RISM layering, slab Poisson–Boltzmann, sampling, and HPC fit together, read
+:doc:`PHYSICS_AND_PIPELINE`.
+
 Build documentation locally
 ---------------------------
 

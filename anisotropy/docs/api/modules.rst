@@ -45,6 +45,14 @@ Hamiltonian
    :members:
    :undoc-members:
 
+.. automodule:: anisotropy.rism_solvation
+   :members:
+   :undoc-members:
+
+.. automodule:: anisotropy.pb_slab_solver
+   :members:
+   :undoc-members:
+
 Mesh & patches
 --------------
 

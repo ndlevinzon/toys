@@ -249,7 +249,12 @@ class FastOrientationEvaluator:
     t_base: np.ndarray
     h_solv: float
     solv_terms: dict
-  # patch arrays in canonical (body) frame — rotate with R.T
+    shell_cache: Any | None
+    rism_params: Any | None
+    param: PatchParameterization
+    pb_solver: Any | None
+    el_method: str
+    # patch arrays in canonical (body) frame — rotate with R.T
     cents_can: np.ndarray
     norms_can: np.ndarray
     mu_can: np.ndarray
@@ -290,6 +295,8 @@ class FastOrientationEvaluator:
         t_base: np.ndarray,
         h_solv_and_terms: tuple[float, dict],
         ising_params: Any | None = None,
+        shell_cache: Any | None = None,
+        pb_solver: Any | None = None,
     ) -> FastOrientationEvaluator:
         patches = param.patches
         n_p = len(patches)
@@ -332,9 +339,15 @@ class FastOrientationEvaluator:
         u_vals = np.array([p.softness for p in patches], dtype=np.float64)
         h_flex, _ = coupling_flex_penalty(param, eta_flex=eta_flex)
         h_solv, solv_terms = h_solv_and_terms
+        rism_mod = None
+        if ising_params is not None and ising_params.rism.enabled:
+            rism_mod = ising_params.rism.to_rism_module_params()
 
-        use_inv_pair = True
+        el_method = "screened_pair"
         if ising_params is not None:
+            el_method = str(ising_params.electrostatics.method).lower()
+        use_inv_pair = el_method != "pb_slab"
+        if ising_params is not None and el_method != "pb_slab":
             use_inv_pair = bool(
                 ising_params.performance.precompute_rotation_invariant_pair
             )
@@ -369,6 +382,11 @@ class FastOrientationEvaluator:
             t_base=np.asarray(t_base, dtype=np.float64).reshape(3),
             h_solv=float(h_solv),
             solv_terms=dict(solv_terms),
+            shell_cache=shell_cache,
+            rism_params=rism_mod,
+            param=param,
+            pb_solver=pb_solver,
+            el_method=el_method,
             cents_can=cents_can,
             norms_can=norms_can,
             mu_can=mu_can,
@@ -438,6 +456,20 @@ class FastOrientationEvaluator:
             "slab_lut_phi0": self.slab_lut.phi0,
             "slab_lut_ez": self.slab_lut.ez,
             "use_invariant_pair": self.use_invariant_pair,
+            "shell_first_can": (
+                None
+                if self.shell_cache is None
+                else self.shell_cache.first_shell_can
+            ),
+            "shell_outer_can": (
+                None if self.shell_cache is None else self.shell_cache.outer_solvent_can
+            ),
+            "shell_dist_can": (
+                None if self.shell_cache is None else self.shell_cache.dist_can
+            ),
+            "rism_params": self.rism_params,
+            "param_ph": self.param.ph,
+            "param_n_patches": len(self.param.patches),
         }
 
     @classmethod
@@ -456,6 +488,46 @@ class FastOrientationEvaluator:
             ),
         )
         lut = SlabZFieldLUT(d["slab_lut_z"], d["slab_lut_phi0"], d["slab_lut_ez"])
+        shell_cache = None
+        if d.get("shell_first_can") is not None:
+            from anisotropy.rism_solvation import CanonicalShellCache
+
+            shell_cache = CanonicalShellCache(
+                interior=canon,
+                dist_can=np.asarray(d["shell_dist_can"], dtype=np.float64),
+                first_shell_can=np.asarray(d["shell_first_can"], dtype=bool),
+                outer_solvent_can=np.asarray(d["shell_outer_can"], dtype=bool),
+            )
+        rism_params = d.get("rism_params")
+        from anisotropy.patches import PatchFeatures, PatchParameterization
+
+        n_p = int(d.get("param_n_patches", len(d["cents_can"])))
+        patches = [
+            PatchFeatures(
+                patch_id=i,
+                area=float(d["areas"][i]),
+                centroid=np.asarray(d["cents_can"][i]),
+                normal=np.asarray(d["norms_can"][i]),
+                mean_curvature=0.0,
+                gaussian_curvature=0.0,
+                charge=float(d["q_arr"][i]),
+                potential=0.0,
+                pka_acid=7.0,
+                hydropathy=float(d["hydr"][i]),
+                polar_density=float(d["pola"][i]),
+                hbond_score=float(d["hbon"][i]),
+                dipole=np.asarray(d["mu_can"][i]),
+                softness=float(d["softness"][i]),
+                face_indices=np.array([0], dtype=np.int64),
+                n_atoms=1,
+            )
+            for i in range(n_p)
+        ]
+        param = PatchParameterization(
+            patches=patches,
+            face_patch_ids=np.zeros(max(1, n_p), dtype=np.int32),
+            ph=float(d.get("param_ph", 7.0)),
+        )
         return cls(
             occupancy=d["occupancy"],
             lattice=lattice,
@@ -466,6 +538,11 @@ class FastOrientationEvaluator:
             t_base=d["t_base"],
             h_solv=float(d["h_solv"]),
             solv_terms=d["solv_terms"],
+            shell_cache=shell_cache,
+            rism_params=rism_params,
+            param=param,
+            pb_solver=None,
+            el_method=str(d.get("el_method", "screened_pair")),
             cents_can=d["cents_can"],
             norms_can=d["norms_can"],
             mu_can=d["mu_can"],
@@ -534,7 +611,11 @@ class FastOrientationEvaluator:
         hp_pol = h_hp + h_pol + h_hb
         hydration_terms = {"H_hp": h_hp, "H_pol": h_pol, "H_hbond_channel": h_hb}
 
-        if self.use_invariant_pair:
+        if self.el_method == "pb_slab" and self.pb_solver is not None:
+            hel, electrostatic_terms = self.pb_solver.energy_from_charges(
+                cents, self.q_arr, mu, slab=self.slab
+            )
+        elif self.use_invariant_pair:
             h_int, el_int_terms = intrinsic_electrostatic_energy(
                 cents[:, 2],
                 self.q_arr,
@@ -573,19 +654,45 @@ class FastOrientationEvaluator:
         )
 
         h_flex = float(self.h_flex)
-        h_tot = self.h_solv + hp_pol + hel + h_film + h_flex
+        h_sol = float(self.h_solv)
+        solv_terms = dict(self.solv_terms)
+        if (
+            self.shell_cache is not None
+            and self.rism_params is not None
+            and bool(getattr(self.rism_params, "enabled", False))
+            and solv_terms.get("layered_solvation")
+        ):
+            from anisotropy.lattice_solvent_hamiltonian import rigid_patch_parameterization
+            from anisotropy.rism_solvation import rism_first_shell_energy
+
+            first_mask, _, _ = self.shell_cache.lab_shell_masks(
+                self.lattice, Rm, self.t_base, lab_xyz_flat=self.lab_xyz_flat
+            )
+            param_pose = rigid_patch_parameterization(self.param, Rm, self.t_base)
+            h_rism, rism_terms = rism_first_shell_energy(
+                self.occupancy,
+                first_mask,
+                self.lab_xyz_flat,
+                param_pose,
+                self.rism_params,
+                occupancy_mode=self.occupancy_mode,
+            )
+            h_sol = float(self.h_solv) + float(h_rism)
+            solv_terms = {**solv_terms, **rism_terms, "H_solv_total": h_sol}
+
+        h_tot = h_sol + hp_pol + hel + h_film + h_flex
 
         if energy_only:
             return float(h_tot)
 
         res = HybridHamiltonianResult(
             H_total=float(h_tot),
-            H_solv=float(self.h_solv),
+            H_solv=float(h_sol),
             H_hp_pol_hbond=float(hp_pol),
             H_el=float(hel),
             H_film=float(h_film),
             H_flex=float(h_flex),
-            solv_terms=self.solv_terms,
+            solv_terms=solv_terms,
             hydration_terms=hydration_terms,
             electrostatic_terms=electrostatic_terms,
             i_air=i_air,

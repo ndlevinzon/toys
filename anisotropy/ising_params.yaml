@@ -32,6 +32,23 @@ solv:
   # occupancy_mode: "binary" (0=air, 1=water) or "ternary" (air / interfacial / bulk).
   occupancy_mode: binary
 
+# -----------------------------------------------------------------------------
+# First solvation shell: 3D-RISM-inspired (rism_solvation.py); outer shell uses solv J, mu
+# -----------------------------------------------------------------------------
+rism:
+  enabled: true
+  # Voxels with canonical distance-to-surface <= this value (Angstrom)
+  first_shell_angstrom: 5.0
+  bulk_number_density: 0.0334
+  temperature_k: 300.0
+  dielectric: 78.0
+  lj_sigma_oo_angstrom: 3.166
+  lj_epsilon_oo_kcal: 0.1554
+  kh_strength: 1.0
+  cavity_gamma_kcal_per_ang2: 0.12
+  site_cutoff_angstrom: 8.0
+  energy_scale: 1.0
+
 # Slab-edge penalty U_film(z) when occupancy can leave the vitrified band.
 confinement:
   penalty_outside: 1.0
@@ -68,16 +85,19 @@ flex:
   eta_flex: 0.0
 
 # -----------------------------------------------------------------------------
-# Electrostatics H_el (screened Coulomb placeholder + slab phi0, E0)
+# Electrostatics H_el
 # -----------------------------------------------------------------------------
 electrostatics:
-  # If set, replace depth-dependent epsilon or kappa from the AWI slab profile.
+  # method: pb_slab (fast FFT×z linearized Poisson–Boltzmann on AWI epsilon(z))
+  #         screened_pair (legacy mid-point Yukawa between patches)
+  method: pb_slab
+  pb_coarse_factor: 2
+  pb_charge_sigma_voxels: 1.25
   homogeneous_epsilon: null
   homogeneous_kappa: null
   r_smooth_angstrom: 0.01
   use_intrinsic_potential: true
   use_dipole_E0_component: true
-  # COULOMB_SCALE in patches.py (332.0636) unless overridden here:
   coulomb_scale: null
 
 # -----------------------------------------------------------------------------
@@ -159,6 +179,11 @@ sampling:
     replica_exchange:
       n_replicas: 8
       swap_interval: 1
+
+# PNG orientation snapshots (lab +Z looking down; skip on HPC with --no-render)
+output:
+  n_orientation_renders: 10
+  render_snapshots: true
 
 # Fast path for orientation / MCMC (vectorized rays, electrostatic cutoff)
 performance:

@@ -1,7 +1,7 @@
-# HPC-oriented overrides — include after copying from ../ising_params.yaml
+# HPC profile: deep-merges over ../ising_params.yaml (see ising_params._load_yaml_root).
 # Usage: orientation_sample.py ... --ising-params hpc/ising_params.hpc.yaml
-#
-# Or merge these keys into a full copy of ising_params.yaml on the cluster.
+
+extends: ../ising_params.yaml
 
 meta:
   description: "HPC profile — fixed-beta MCMC, parallel CPU, no rendering"
@@ -21,10 +21,15 @@ sampling:
     step_deg: 10.0
     seed_pool: 16
 
+electrostatics:
+  method: pb_slab
+  pb_coarse_factor: 2
+
 performance:
   use_fast_evaluator: true
-  precompute_rotation_invariant_pair: true
+  precompute_rotation_invariant_pair: false
   electrostatic_pair_cutoff_angstrom: 80.0
   mcmc_energy_only: true
   parallel_workers: null          # set via CLI --parallel-workers $SLURM_CPUS_PER_TASK
-  parallel_mcmc_chains: true
+  # PB slab solver is built in the main process; parallel chain workers skip full PB rebuild.
+  parallel_mcmc_chains: false

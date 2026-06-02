@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import shutil
 from pathlib import Path
 
 import numpy as np
@@ -190,7 +191,17 @@ def parse_args() -> argparse.Namespace:
         default=Path("orientation_diagnostics"),
         help="Output directory",
     )
-    p.add_argument("--no-render", action="store_true", help="Skip PyVista screenshot rendering")
+    p.add_argument(
+        "--no-render",
+        action="store_true",
+        help="Skip PyVista snapshots (sets output.render_snapshots false)",
+    )
+    p.add_argument(
+        "--n-render-poses",
+        type=int,
+        default=None,
+        help="Number of most/least probable orientations to render (default from YAML: 10)",
+    )
     p.add_argument(
         "--canonical-pad",
         type=float,
@@ -324,6 +335,20 @@ def _run_mcmc_from_seeds(
     return kept, summary, None
 
 
+def select_pose_indices_by_weight(
+    weights: np.ndarray,
+    n: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return (most_probable_indices, least_probable_indices), each length <= n."""
+    w = np.asarray(weights, dtype=np.float64).reshape(-1)
+    k = int(min(max(n, 0), len(w)))
+    if k == 0:
+        return np.array([], dtype=int), np.array([], dtype=int)
+    most = np.argsort(-w, kind="stable")[:k]
+    least = np.argsort(w, kind="stable")[:k]
+    return most, least
+
+
 def build_pose_entry(
     rank: int,
     idx: int,
@@ -332,12 +357,15 @@ def build_pose_entry(
     energy: float,
     weight: float,
     resk,
+    *,
+    category: str = "",
 ) -> dict:
     """One pose record for JSON export."""
     yaw, pitch, roll = euler_zyx_from_R(Rk)
     az_deg, el_deg = viewing_angles_degrees(Rk)
     return {
         "rank": rank,
+        "category": category,
         "index": int(idx),
         "H_total": float(energy),
         "weight": float(weight),
@@ -412,11 +440,18 @@ def render_system_snapshot(
     slab_thickness: float,
     *,
     filename: str = "system_view.png",
-) -> None:
+    subdirectory: str | None = None,
+) -> Path | None:
+    """
+    PyVista snapshot with camera along **lab +Z** (looking down the cryo-EM axis).
+
+    Uses ``view_xy()`` — same convention as the reference ``reference_view_az0_el0`` pose.
+    Returns the path written, or None if PyVista is unavailable.
+    """
     try:
         import pyvista as pv
     except Exception:
-        return
+        return None
 
     v = mesh.vertices.astype(np.float64)
     f = mesh.faces.astype(np.int64)
@@ -443,7 +478,41 @@ def render_system_snapshot(
     ]
     pl.view_xy()
     pl.reset_camera(bounds=scene_bounds)
-    pl.show(screenshot=str(outdir / filename))
+    dest = outdir / filename if subdirectory is None else outdir / subdirectory / filename
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    pl.show(screenshot=str(dest))
+    return dest
+
+
+def write_weighted_orientation_renders(
+    outdir: Path,
+    mesh: ProteinMesh,
+    poses: list[dict],
+    t_base: np.ndarray,
+    slab_thickness: float,
+    *,
+    subdirectory: str = "views_z_down",
+    name_prefix: str,
+) -> list[Path]:
+    """Render each pose dict (with ``pose.R``) looking down lab +Z."""
+    written: list[Path] = []
+    for entry in poses:
+        Rk = np.asarray(entry["pose"]["R"], dtype=np.float64)
+        w = float(entry["weight"])
+        rank = int(entry["rank"])
+        fname = f"{name_prefix}_rank{rank:02d}_w{w:.4e}.png"
+        path = render_system_snapshot(
+            outdir,
+            mesh,
+            Rk,
+            t_base,
+            slab_thickness,
+            filename=fname,
+            subdirectory=subdirectory,
+        )
+        if path is not None:
+            written.append(path)
+    return written
 
 
 def main() -> None:
@@ -514,19 +583,55 @@ def main_impl(args: argparse.Namespace, run: RunSession) -> None:
         lattice, solvent_z_within=(0.0, slab_thickness)
     ).astype(np.float64)
 
-    h_solv_and_terms = precompute_solvation_energy(
-        occ,
-        lattice,
-        slab,
-        coeffs,
-        occupancy_mode=ising.solv.occupancy_mode,
-        confinement_penalty_outside=ising.confinement.penalty_outside,
-        confinement_interface_softness=ising.confinement.interface_softness_angstrom,
-    )
-    lab_xyz_flat = lattice.grid_centers_xyz().reshape(-1, 3)
+    lab_xyz_flat = lattice.grid_centers_xyz().reshape(-1, 3).astype(np.float64)
+    rism_cfg = ising.rism.to_rism_module_params()
+    shell_cache = None
     canon_cache = None
     canon_pad = ising.lattice.canonical_interior_pad_angstrom
-    if not args.slow_voxelization:
+    eye3 = np.eye(3, dtype=np.float64)
+
+    if rism_cfg.enabled:
+        from anisotropy.rism_solvation import (
+            CanonicalShellCache,
+            precompute_outer_solvation_only,
+        )
+
+        shell_cache = CanonicalShellCache.build(
+            mesh,
+            spacing=h,
+            pad_angstrom=canon_pad,
+            first_shell_angstrom=rism_cfg.first_shell_angstrom,
+        )
+        canon_cache = shell_cache.interior
+        h_solv_and_terms = precompute_outer_solvation_only(
+            occ,
+            lattice,
+            slab,
+            coeffs,
+            shell_cache,
+            eye3,
+            t_base,
+            occupancy_mode=ising.solv.occupancy_mode,
+            confinement_penalty_outside=ising.confinement.penalty_outside,
+            confinement_interface_softness=ising.confinement.interface_softness_angstrom,
+            lab_xyz_flat=lab_xyz_flat,
+        )
+        run.log(
+            f"Layered H_solv: 3D-RISM-inspired first shell (<= {rism_cfg.first_shell_angstrom:.1f} A) "
+            f"+ Ising outer shell (H_outer={h_solv_and_terms[0]:.4g}); RISM recomputed per pose"
+        )
+    else:
+        h_solv_and_terms = precompute_solvation_energy(
+            occ,
+            lattice,
+            slab,
+            coeffs,
+            occupancy_mode=ising.solv.occupancy_mode,
+            confinement_penalty_outside=ising.confinement.penalty_outside,
+            confinement_interface_softness=ising.confinement.interface_softness_angstrom,
+        )
+
+    if not args.slow_voxelization and canon_cache is None:
         run.log(
             "Fast path: canonical interior cache + reused H_solv "
             f"(canonical pad={canon_pad:.1f} Ang; use --slow-voxelization for legacy PyVista per pose)"
@@ -536,8 +641,31 @@ def main_impl(args: argparse.Namespace, run: RunSession) -> None:
             spacing=h,
             pad_angstrom=canon_pad,
         )
-    else:
+    elif args.slow_voxelization:
         run.log("Slow path: PyVista voxelization every pose (still reuses H_solv).")
+
+    pb_solver = None
+    if str(ising.electrostatics.method).lower() == "pb_slab":
+        from anisotropy.pb_slab_solver import SlabPBSolver
+
+        pb_solver = SlabPBSolver.from_lattice(
+            lattice,
+            slab,
+            ising.electrostatics.to_pb_solver_params(),
+            lab_xyz_flat=lab_xyz_flat,
+            homogeneous_epsilon=ising.electrostatics.homogeneous_epsilon,
+            homogeneous_kappa=ising.electrostatics.homogeneous_kappa,
+        )
+        run.log(
+            f"Electrostatics: linearized PB on AWI slab (coarse_factor="
+            f"{ising.electrostatics.pb_coarse_factor}, "
+            f"grid {pb_solver.lattice.shape}, h={pb_solver.lattice.spacing:.2f} A)"
+        )
+        if ising.performance.parallel_mcmc_chains:
+            run.log(
+                "  NOTE: parallel MCMC worker processes do not yet rebuild the PB solver; "
+                "use parallel_mcmc_chains: false for full PB electrostatics on all chains."
+            )
 
     rng = np.random.default_rng(ising.sampling.seed)
     shape0 = shape_anisotropy_from_mesh(mesh)
@@ -567,11 +695,16 @@ def main_impl(args: argparse.Namespace, run: RunSession) -> None:
             t_base=t_base,
             h_solv_and_terms=h_solv_and_terms,
             ising_params=ising,
+            shell_cache=shell_cache,
+            pb_solver=pb_solver,
         )
-        run.log(
-            "Fast evaluator: vectorized rays + electrostatic cutoff "
-            f"({fast_eval.el_pair_cutoff} Ang)"
-        )
+        if pb_solver is not None:
+            run.log("Fast evaluator: slab PB electrostatics (per-pose charge deposition)")
+        else:
+            run.log(
+                "Fast evaluator: vectorized rays + electrostatic cutoff "
+                f"({fast_eval.el_pair_cutoff} Ang)"
+            )
         if fast_eval.use_invariant_pair:
             run.log(
                 f"  rotation-invariant H_el pair precomputed: {fast_eval.h_el_pair_const:.4g} "
@@ -611,10 +744,12 @@ def main_impl(args: argparse.Namespace, run: RunSession) -> None:
                 coeffs,
                 occupancy_mode=ising.solv.occupancy_mode,
                 canonical_interior=None if args.slow_voxelization else canon_cache,
+                shell_cache=shell_cache,
                 lab_xyz_flat=lab_xyz_flat,
                 h_solv_and_terms=h_solv_and_terms,
                 use_slow_pyvista_voxel=bool(args.slow_voxelization),
                 ising_params=ising,
+                pb_solver=pb_solver,
             )
             return float(res.H_total), res
         finally:
@@ -857,42 +992,46 @@ def main_impl(args: argparse.Namespace, run: RunSession) -> None:
     )
     report_path = write_orientation_sampling_report(args.outdir, sampling_summary)
 
-    K = int(min(10, n_samples))
-    order_best = np.argsort(energies)[:K]
-    order_worst = np.argsort(energies)[-K:][::-1]
+    n_render = int(ising.output.n_orientation_renders)
+    idx_most, idx_least = select_pose_indices_by_weight(weights, n_render)
+    map_idx = int(np.argmax(weights))
 
-    for idx in np.unique(np.concatenate([order_best, order_worst])):
+    for idx in np.unique(np.concatenate([idx_most, idx_least, np.array([map_idx])])):
         if results[int(idx)] is None:
             _, results[int(idx)] = evaluate_pose(Rs[int(idx)])
 
-    top_list = [
-        build_pose_entry(
-            rank,
-            int(idx),
-            Rs[int(idx)],
-            t_base,
-            float(energies[int(idx)]),
-            float(weights[int(idx)]),
-            results[int(idx)],
-        )
-        for rank, idx in enumerate(order_best, start=1)
-    ]
-    bottom_list = [
-        build_pose_entry(
-            rank,
-            int(idx),
-            Rs[int(idx)],
-            t_base,
-            float(energies[int(idx)]),
-            float(weights[int(idx)]),
-            results[int(idx)],
-        )
-        for rank, idx in enumerate(order_worst, start=1)
-    ]
+    def _entries(indices: np.ndarray, category: str) -> list[dict]:
+        out: list[dict] = []
+        for rank, idx in enumerate(indices, start=1):
+            out.append(
+                build_pose_entry(
+                    rank,
+                    int(idx),
+                    Rs[int(idx)],
+                    t_base,
+                    float(energies[int(idx)]),
+                    float(weights[int(idx)]),
+                    results[int(idx)],
+                    category=category,
+                )
+            )
+        return out
 
-    best = top_list[0]
-    R_best = np.asarray(best["pose"]["R"], dtype=np.float64)
-    t_best = np.asarray(best["pose"]["t"], dtype=np.float64)
+    most_probable = _entries(idx_most, "most_probable")
+    least_probable = _entries(idx_least, "least_probable")
+    map_entry = build_pose_entry(
+        1,
+        map_idx,
+        Rs[map_idx],
+        t_base,
+        float(energies[map_idx]),
+        float(weights[map_idx]),
+        results[map_idx],
+        category="map",
+    )
+
+    R_map = np.asarray(map_entry["pose"]["R"], dtype=np.float64)
+    t_map = np.asarray(map_entry["pose"]["t"], dtype=np.float64)
 
     payload = {
         "pdb": str(args.pdb.resolve()),
@@ -929,44 +1068,65 @@ def main_impl(args: argparse.Namespace, run: RunSession) -> None:
         "E_min": float(np.min(energies)),
         "E_mean": float(np.mean(energies)),
         "E_std": float(np.std(energies)),
-        "top_poses": top_list,
-        "bottom_poses": bottom_list,
+        "most_probable_poses": most_probable,
+        "least_probable_poses": least_probable,
+        "top_poses": most_probable,
+        "bottom_poses": least_probable,
         "orientation_sampling_diagnostics": sampling_summary,
         "couplings": coeffs.__dict__,
-        "map_pose": best,
+        "map_pose": map_entry,
+        "output": {
+            "n_orientation_renders": n_render,
+            "render_snapshots": bool(ising.output.render_snapshots),
+            "view_camera": "lab_plus_z_down",
+        },
     }
     (args.outdir / "top_poses.json").write_text(
         json.dumps(payload, indent=2), encoding="utf-8"
     )
 
-    if not args.no_render:
-        render_system_snapshot(args.outdir, mesh, R_best, t_best, slab_thickness)
-        for entry in top_list[:10]:
-            Rk = np.asarray(entry["pose"]["R"], dtype=np.float64)
-            render_system_snapshot(
+    render_paths: list[Path] = []
+    do_render = bool(ising.output.render_snapshots) and not args.no_render
+    if do_render:
+        ref = render_system_snapshot(
+            args.outdir, mesh, R_map, t_map, slab_thickness, filename="system_view_map.png"
+        )
+        if ref is not None:
+            render_paths.append(ref)
+        render_paths.extend(
+            write_weighted_orientation_renders(
                 args.outdir,
                 mesh,
-                Rk,
+                most_probable,
                 t_base,
                 slab_thickness,
-                filename=f"system_view_rank{entry['rank']:02d}.png",
+                name_prefix="most_probable",
             )
-        for entry in bottom_list[:10]:
-            Rk = np.asarray(entry["pose"]["R"], dtype=np.float64)
-            render_system_snapshot(
+        )
+        render_paths.extend(
+            write_weighted_orientation_renders(
                 args.outdir,
                 mesh,
-                Rk,
+                least_probable,
                 t_base,
                 slab_thickness,
-                filename=f"system_view_worst_rank{entry['rank']:02d}.png",
+                name_prefix="least_probable",
             )
+        legacy = args.outdir / "system_view.png"
+        if ref is not None and not legacy.exists():
+            shutil.copy2(ref, legacy)
 
-    run.log("Most probable (MAP) orientation = minimum-energy sample")
-    run.log(f"  E_min = {payload['E_min']:.0f}")
-    run.log(f"  index = {best['index']}/{n_samples - 1}")
-    euler = best["pose"]["euler_zyx_deg"]
+    run.log("MAP orientation = highest Boltzmann weight")
+    run.log(f"  weight_max = {float(weights[map_idx]):.6g}")
+    run.log(f"  H at MAP = {float(energies[map_idx]):.0f}")
+    run.log(f"  index = {map_idx}/{n_samples - 1}")
+    euler = map_entry["pose"]["euler_zyx_deg"]
     run.log(f"  Euler Z-Y-X (deg) = [{euler[0]:.2f}, {euler[1]:.2f}, {euler[2]:.2f}]")
+    if do_render:
+        run.log(
+            f"  rendered {len(most_probable)} most + {len(least_probable)} least probable "
+            f"(+Z down) under views_z_down/"
+        )
     run.log(f"  wrote: {str((args.outdir / 'top_poses.json').resolve())}")
     run.log(f"  orientation diagnostics: {str(report_path.resolve())}")
     for note in sampling_summary.get("interpretation_notes", []):
@@ -980,8 +1140,11 @@ def main_impl(args: argparse.Namespace, run: RunSession) -> None:
     ]:
         if path is not None:
             run.log(f"  wrote: {str(path.resolve())}")
-    if not args.no_render:
-        run.log(f"  wrote: {str((args.outdir / 'system_view.png').resolve())}")
+    if do_render:
+        for rp in render_paths[:5]:
+            run.log(f"  wrote: {rp.resolve()}")
+        if len(render_paths) > 5:
+            run.log(f"  ... and {len(render_paths) - 5} more PNGs under views_z_down/")
     run.log(f"OUTDIR: {args.outdir.resolve()}")
 
 
